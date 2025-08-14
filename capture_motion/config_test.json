@@ -32,17 +32,8 @@
 			"sleep_time":60,
 			"watch_dir":"./uploads",
 			"server_type":"open",
-			"server":"http://192.168.1.177:9090",
-			"endpoint":"uploadme",
-			"send_images":true,
-			"delete_when_done":false
-		},
-		{
-			"active":true,
-			"sleep_time":60,
-			"watch_dir":"./uploads",
-			"server_type":"open",
-			"server":"https://mckexp.blackdoge.com",
+			"xserver":"https://192.168.1.177:9090",
+			"server":"http://173.255.215.223:9090",
 			"endpoint":"uploadme",
 			"send_images":false,
 			"delete_when_done":true

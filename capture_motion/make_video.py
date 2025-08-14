@@ -70,6 +70,7 @@ class MakeVideo :
 
             for json_file in all_json_files :
                     motion_event_json = {}
+                    self.cmosys.log.info(f"opening json file:{image_folder}/{json_file}")
                     with open(image_folder+"/"+json_file, 'r') as f:
                         motion_event_json = json.load(f)   
                         video_json["me_delta_array"].append(motion_event_json)
