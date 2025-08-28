@@ -44,11 +44,17 @@ class SendImage :
                         comoollama = CmoOllama(self.config_file)
                         olllama_json = comoollama.callOllamaWithMovie("qwen2.5vl:3b","person_animal_question",full_file_name)
                         ollama_json_file_name = f"{me_event_dir}/me_ollama.json"
+                        self.cmosys.log.info(f"*** olama said : {olllama_json}")
+                        self.cmosys.log.info(f"*** BEFORE ollama_json_file_name =  {ollama_json_file_name}")
                         with open( ollama_json_file_name, 'w') as outfile:
                                 outfile.write( json.dumps(olllama_json,indent=4) )
+                        self.cmosys.log.info(f"*** AFTER ollama_json_file_name =  {ollama_json_file_name}")
+                        
+                        #print("*****sleeping for a bit")
+                        #time.sleep(120)
                                 
-                        #if(comoollama.isSendMovie(olllama_json)) :
-                        if(True) :
+                        #if(True) :
+                        if(comoollama.isSendMovie(olllama_json)) :
                             self.sendFile(me_event_dir,me_group,me_event_group,me_name,'',"me_ollama.json")
                             self.sendFile(me_event_dir,me_group,me_event_group,me_name,'',me_data['me_video_name'])
                             self.sendFile(me_event_dir,me_group,me_event_group,me_name,'',me_data['me_rep_image'])
@@ -58,11 +64,14 @@ class SendImage :
                                     self.sendFile(me_event_dir+"/images",me_group,me_event_group,me_name,'images',image_file)
                         else:
                             self.cmosys.log.info(f"ollama said to not send the event {olllama_json}")
+            
 
 
                         if(self.config["delete_when_done"]) : 
-                            shutil.rmtree(me_event_dir) 
-
+                            shutil.rmtree(me_event_dir)
+                        
+                        #print("***** sleeping for a bit")
+                        #time.sleep(120)
 
     def sendFile(self,me_event_dir,me_group,me_event_group,me_name,image_dir,file_name) :   
         server_url = self.config["server"]

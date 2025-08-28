@@ -16,9 +16,12 @@ class CmoOllama:
 
             args = (model,question,movie)
             command = ['bash', "/home/pi/bin/call_ollama_movie.bash"] + list(args)
+            print(f"*** ollamma before call : model={model} quesion={question} movie={movie}")
             result = subprocess.run(command, capture_output=True, text=True, check=True)
             data = json.loads(result.stdout)
-            self.cmosys.log.info(f"ollama returned : {data}")
+            print(f"*** ollama stdput: {result.stdout}")
+            print(f"*** ollama stderr: {result.stderr}")
+            print(f"*** ollama returned : {data}")
             return data
         except subprocess.CalledProcessError as e:
             print(f"Error executing Bash script: {e}")
@@ -28,9 +31,16 @@ class CmoOllama:
             print(f"Error: Bash script not found at {script_path}")
             return None, "File not found"
         except Exception as e:
-            print(f"An unexpected error occurred: {e}")
+            print(f"An unexpected error occurred calling ollama: {e}")
             return None, str(e)
         
+    def getErrorJson(self):
+        errorJson = {
+            "error": True
+        }
+        data = json.loads(errorJson)
+        return data
+
     def isDataValue(self,data,key):
         if key in data:
             return data[key]
@@ -38,7 +48,10 @@ class CmoOllama:
             return False
         
     def isAlert(self,data):
-        return(self.isDataValue(data,""))
+        raccoon = self.isDataValue(data,"raccoon")
+        animal = self.isDataValue(data,"animal")
+        send = ( raccoon )
+        return(send)
     
     def isSendMovie(self,data):
         person = self.isDataValue(data,"person")
@@ -46,7 +59,8 @@ class CmoOllama:
         dog = self.isDataValue(data,"dog")
         raccoon = self.isDataValue(data,"raccoon")
         animal = self.isDataValue(data,"animal")
-        send = ( person or cat or dog or raccoon or animal )
+        legs = self.isDataValue(data,"legs")
+        send = ( person or cat or dog or raccoon or animal or legs)
         return(send)
     
     def isOnlyAnimal(self,data):
@@ -55,6 +69,7 @@ class CmoOllama:
         dog = self.isDataValue(data,"dog")
         raccoon = self.isDataValue(data,"raccoon")
         animal = self.isDataValue(data,"animal")
+        error = self.isDataValue(data,"error")
         only_animal = ( not(person) and not(cat) and not(dog) and not(raccoon) and animal )
         return(only_animal)
 
