@@ -1,5 +1,12 @@
 # capture motion client
 
+> **Being replaced.** This is the pet door Pi's original capture code (`capture_motion/cmo.py`,
+> `make_video.py`, `send_image.py`, started by `@reboot` cron jobs). It is being replaced by
+> [pet_cam](https://github.com/markmckellar/pet_cam) (`pet_watch.py`, run as `pet_watch.service`),
+> which records, classifies with the shared [cmo_ollama](https://github.com/markmckellar/cmo_ollama)
+> scripts and uploads to cmo_server in the same format. Once the pet door runs pet_cam, this repo is
+> kept only for history. The Docker notes below are from 2020.
+
 
 
 ### install docker
