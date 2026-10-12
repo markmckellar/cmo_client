@@ -970,6 +970,9 @@ def main(argv=None):
     reporter = daily_reporter(conf, history, health, uploader, server_urls, notifier, started)
 
     signal.signal(signal.SIGTERM, lambda *_: STOP.set())
+    if reporter:
+        # SIGUSR1: send a report for the last 24 hours now (systemctl kill --kill-whom=main -s USR1 <service>)
+        signal.signal(signal.SIGUSR1, lambda *_: reporter.request())
     for t in [camera, worker] + [x for x in (uploader, health, reporter) if x]:
         t.start()
     log.info("cmo_watch: %s watching %s (%s) at %dx%d, motion at %dx%d %s fps", conf["me_group"], camera.name(),

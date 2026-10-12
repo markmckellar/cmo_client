@@ -10,9 +10,15 @@ report.history_days days), so the report covers the whole day across restarts:
   {"t": ..., "kind": "camera_restart", "stall": false}        ffmpeg restarted (the camera dropped off)
   {"t": ..., "kind": "outage", "check": "the camera", "start": ..., "end": ...}   a health problem (health.py)
   {"t": ..., "kind": "announce", "ok": ["bedroom"], "failed": ["study"]}           Google Home
-  {"t": ..., "kind": "report"}                                the daily report went out
+  {"t": ..., "kind": "report"}                                the daily report went out ("report_asked": one
+                                                              asked for with SIGUSR1)
+  lines with "backfill": "log" or "server" were added from the logs and cmo_server, from before
+  history.jsonl existed
 
 Print today's report without sending it:  python3 cmo_watch.py pet_door.properties --report
+Make the running service send one now (the 09:00 one still comes):
+  sudo systemctl kill --kill-whom=main -s USR1 cmo_watch_pet_door
+  systemctl --user kill --kill-whom=main -s USR1 cmo_watch_porch_cam
 """
 import json
 import logging
@@ -218,6 +224,7 @@ class DailyReporter(threading.Thread):
         self.make_report = make_report      # callable(since, now) -> text
         self.notifier = notifier
         self.stop_event = stop or threading.Event()
+        self.wake = threading.Event()
 
     def due_time(self, now):
         """The newest report time at or before now."""
@@ -231,29 +238,41 @@ class DailyReporter(threading.Thread):
             now = time.time()
             due = self.due_time(now)
             last = self.history.last("report")
-            first = self.history.read()[:1]
-            # never sent: the first report is the next one (not one covering a few minutes at the first start)
-            last_t = last["t"] if last else (first[0]["t"] if first else now)
+            starts = [r["t"] for r in self.history.read() if r["kind"] == "start"]
+            # never sent: the first report is the next one after cmo_watch first started
+            last_t = last["t"] if last else (starts[0] if starts else now)
             if last_t < due and now - due < LATE_HOURS * 3600:
-                self.send(max(last_t, due - 86400), now)
+                self.send(due - 86400, now)
                 continue
             if last_t < due:                         # too late for that one: wait for the next
                 self.history.record("report", skipped=True)
-            nxt = due + 86400
-            self.stop_event.wait(min(nxt - time.time(), 3600))
+            # sleep until the next report time, or a request for one now (SIGUSR1, request())
+            end = min(due + 86400, time.time() + 3600)
+            while not self.stop_event.is_set() and time.time() < end:
+                if self.wake.wait(min(5, max(end - time.time(), 0.1))):
+                    self.wake.clear()
+                    now = time.time()
+                    self.send(now - 86400, now, scheduled=False)
 
-    def send(self, since, now):
+    def request(self):
+        """Send a report for the last 24 hours now, as well as the daily ones (from a signal handler)."""
+        self.wake.set()
+
+    def send(self, since, now, scheduled=True):
         try:
             text = self.make_report(since, now)
         except Exception:
             log.exception("daily report failed")
             text = "📊 {}: the daily report could not be made, see the log".format(self.name_)
-        log.info("daily report:\n%s", text)
+        log.info("daily report%s:\n%s", "" if scheduled else " (asked for)", text)
         try:
             if self.notifier:
                 self.notifier.send_text(text)
-            self.history.record("report")
+            # a report asked for is recorded apart, so the daily one still comes at report_time
+            self.history.record("report" if scheduled else "report_asked")
             self.history.prune()
         except Exception as e:
-            log.warning("daily report: telegram failed (trying again in %d min): %s", RETRY_SECONDS // 60, e)
-            self.stop_event.wait(RETRY_SECONDS)
+            log.warning("daily report: telegram failed%s: %s",
+                        " (trying again in {} min)".format(RETRY_SECONDS // 60) if scheduled else "", e)
+            if scheduled:
+                self.stop_event.wait(RETRY_SECONDS)
