@@ -17,8 +17,8 @@ report.history_days days), so the report covers the whole day across restarts:
 
 Print today's report without sending it:  python3 cmo_watch.py pet_door.properties --report
 Make the running service send one now (the 09:00 one still comes):
-  sudo systemctl kill --kill-whom=main -s USR1 cmo_watch_pet_door
-  systemctl --user kill --kill-whom=main -s USR1 cmo_watch_porch_cam
+  sudo systemctl kill --kill-who=main -s USR1 cmo_watch_pet_door
+  systemctl --user kill --kill-who=main -s USR1 cmo_watch_porch_cam
 """
 import json
 import logging

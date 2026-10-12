@@ -81,8 +81,8 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   covers restarts too; a report missed while cmo_watch was stopped is sent when it starts again.
   `cmo_watch.py <camera>.properties --report` prints the report for the last 24 hours, without sending it.
   To have a running camera send one now (the 09:00 one still comes):
-  `sudo systemctl kill --kill-whom=main -s USR1 cmo_watch_pet_door` on the Pi,
-  `systemctl --user kill --kill-whom=main -s USR1 cmo_watch_porch_cam` on mckada.
+  `sudo systemctl kill --kill-who=main -s USR1 cmo_watch_pet_door` on the Pi,
+  `systemctl --user kill --kill-who=main -s USR1 cmo_watch_porch_cam` on mckada.
 
   ```
   📊 pet_door daily report (picmopetdoor)
