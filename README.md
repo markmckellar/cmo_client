@@ -167,8 +167,25 @@ systemctl --user daemon-reload && systemctl --user enable --now cmo_watch_porch_
 systemctl --user restart cmo_watch_porch_cam
 ```
 
-Stopping (SIGTERM) finishes the open segment and classifies and uploads the events already detected.
-Crashes show in `journalctl -u cmo_watch_pet_door` / `journalctl --user -u cmo_watch_porch_cam`.
+### Starting and stopping
+
+Each camera runs as a service, started at boot and restarted if it dies. Use these instead of running
+`cmo_watch.py` by hand: only one program at a time can use a camera's buffer (and the Pi camera).
+
+| | Pet door (on the Pi: `ssh pi@192.168.1.250`) | Porch (on mckada) |
+|---|---|---|
+| Is it running? | `systemctl status cmo_watch_pet_door` | `systemctl --user status cmo_watch_porch_cam` |
+| Stop | `sudo systemctl stop cmo_watch_pet_door` | `systemctl --user stop cmo_watch_porch_cam` |
+| Start | `sudo systemctl start cmo_watch_pet_door` | `systemctl --user start cmo_watch_porch_cam` |
+| Restart (after a `git pull` or a settings change) | `sudo systemctl restart cmo_watch_pet_door` | `systemctl --user restart cmo_watch_porch_cam` |
+| Don't start at boot / start at boot again | `sudo systemctl disable` / `enable cmo_watch_pet_door` | `systemctl --user disable` / `enable cmo_watch_porch_cam` |
+| Watch the log | `tail -f ~/logs/pet_watch.log` | `tail -f ~/logs/porch_watch.log` |
+| Crashes | `journalctl -u cmo_watch_pet_door` | `journalctl --user -u cmo_watch_porch_cam` |
+
+`stop` stays stopped until `start` or the next boot (unless it is also `disable`d). Stopping takes up to a
+minute or two: it finishes the open segment, and classifies and uploads the events already detected
+(events not uploaded yet are sent after the next start). To run one by hand for a test, stop its
+service first, and start it again afterwards.
 
 ## Left out of the porch camera's old code
 
