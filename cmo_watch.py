@@ -129,6 +129,15 @@ DEFAULTS = {
         # message for each label; empty = no announcement. Several labels: their messages in this order.
         "message": {"raccoon": "", "cat": "", "dog": "", "person": "", "legs": "", "animal": ""},
     },
+    "health": {
+        # a Telegram message when Ollama, the camera, a cmo_server or a disk is down, and when it is fixed
+        # (see health.py)
+        "enabled": True,
+        "check_seconds": 60,
+        "down_minutes": 5.0,             # how long a problem must last before the message
+        "repeat_hours": 24.0,            # a reminder while it stays down; 0 = never
+        "min_free_gb": 2.0,              # less free disk than this (here, or on a cmo_server) is a problem
+    },
     "save_rejects": False,               # keep a grid jpg + json of events with no target, for tuning
     "log_file": "",                     # empty = ~/logs/<me_group>.log (call_ollama.LOG_DIR, or $CMO_LOG_DIR)
 }
@@ -625,6 +634,24 @@ def telegram_notifier(conf):
     return notifier
 
 
+def health_monitor(conf, camera, worker, servers, notifier):
+    """The health monitor (health.py) when health.enabled, else None. Without a notifier it only logs."""
+    h = conf["health"]
+    if not h["enabled"]:
+        return None
+    import health
+    checks = [health.ollama_check(call_ollama.setting("api"), worker)]
+    if not conf["camera"]["source"]:
+        checks.append(health.camera_check(camera, h["check_seconds"]))
+    for url in servers:
+        checks += health.server_checks(url.rstrip("/") + "/", h["min_free_gb"])
+    checks.append(health.disk_check(conf["events_dir"], h["min_free_gb"]))
+    log.info("health: checking %s every %ss; a problem is reported after %s min%s", ", ".join(c.what for c in checks),
+             h["check_seconds"], h["down_minutes"], " on Telegram" if notifier else " (log only, no Telegram)")
+    return health.HealthMonitor(conf["me_group"], checks, notifier, h["check_seconds"], h["down_minutes"],
+                                h["repeat_hours"], stop=STOP)
+
+
 def use_cmo_ollama(path):
     """Import the shared classifier (call_ollama.py) from the cmo_ollama folder."""
     global call_ollama
@@ -651,6 +678,7 @@ class Worker(threading.Thread):
         self.counter = 0
         self.stats = {"events": 0, "matches": 0, "skipped_short": 0, "unclassified": 0, "saved": 0,
                       "llm_seconds": 0.0}
+        self.llm_failed_since = None    # wall time of the first failed classification in a row (health.py)
 
     def oldest_needed(self):
         with self.lock:
@@ -714,6 +742,10 @@ class Worker(threading.Thread):
         llm = {"seconds": round(secs, 1), "question": self.cl["question"],
                "ollama": call_ollama.summarize(movie_calls), "ollama_calls": movie_calls}
         took = "{:.1f}s; {}".format(secs, call_ollama.describe(movie_calls))
+        if labels is None:
+            self.llm_failed_since = self.llm_failed_since or time.time()
+        else:
+            self.llm_failed_since = None
         cands = ev.picker.best_first()
         if labels is None:
             if not self.cl["upload_unclassified"]:
@@ -841,7 +873,8 @@ def main(argv=None):
         if not all(login):
             log.warning("camera: no login (CAM_USER, CAM_PASS) in camera.credentials_file or the environment")
 
-    uploader = None
+    uploader = notifier = None
+    servers = []
     if not a.no_upload:
         u = conf["upload"]
         servers = upload_servers(conf)
@@ -856,9 +889,10 @@ def main(argv=None):
     detector.size = camera.size
     detector.reset_stream()
     worker = Worker(conf, events, camera, uploader, google_home_announcer(conf))
+    health = health_monitor(conf, camera, worker, [x["url"] for x in servers if x.get("active", True)], notifier)
 
     signal.signal(signal.SIGTERM, lambda *_: STOP.set())
-    for t in [camera, worker] + ([uploader] if uploader else []):
+    for t in [camera, worker] + [x for x in (uploader, health) if x]:
         t.start()
     log.info("cmo_watch: %s watching %s (%s) at %dx%d, motion at %dx%d %s fps", conf["me_group"], camera.name(),
              conf["camera"]["type"], conf["camera"]["width"], conf["camera"]["height"], camera.size[0],

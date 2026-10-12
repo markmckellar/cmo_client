@@ -95,6 +95,10 @@ class TelegramNotifier:
         self.stats["sent"] += 1
         log.info("telegram: sent %s (%s)", event_dir.name, ",".join(observed(event_dir)) or "unclassified")
 
+    def send_text(self, text):
+        """Send a plain text message (the health alerts). Raises if telegram-send fails."""
+        self.run_send(text)
+
     def run_send(self, *args):
         cmd = [self.program] + (["--config", self.conf] if self.conf else []) + list(args)
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout)

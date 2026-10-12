@@ -60,6 +60,19 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   A raccoon also gets `raccoon_alert_count` extra "RACCOON ALERT!!!" messages. Failed alerts are retried
   5 times.
 
+- **Health alerts** (`health.py`): every minute it checks that Ollama answers (and the last
+  classification worked), that video is arriving, that each cmo_server answers and has disk space, and
+  that this machine has disk space. A problem that lasts `health.down_minutes` (5) gets one Telegram
+  message, through the camera's own bot, and there is one more when it is fixed, with how long it was
+  down. Shorter dropouts send nothing, and a problem that lasts gets one reminder a day
+  (`health.repeat_hours`). If Telegram can't be reached at the time (the internet is down), the message
+  is sent once it can be, as "was down from ... to ...". Everything is also logged (`health:` lines).
+
+  ```
+  ⚠️ porch_cam (mckada): the camera is down since 05:50 (5 min): no video from rtsp://192.168.1.247/V_ENC_001 for 5 min
+  ✅ porch_cam (mckada): the camera is working again since 06:02 (down 12 min, from 05:50)
+  ```
+
 ### What's in an event
 
 | File | |
@@ -87,6 +100,7 @@ unknown key stops cmo_watch with an error. Paths are relative to the file and ma
 | `motion.masks` | `x0,y0,x1,y1` boxes (0-1 of the picture) to ignore, separated by `;` |
 | `camera.input_options` | extra ffmpeg options, as on a command line |
 | `camera.source` | a movie file to play instead of the camera (testing) |
+| `health.*` | the health alerts: on/off, how often to check, how long before a problem is reported, reminders, the disk space limit |
 
 **The camera password** is never in a properties file, git, or a command line. `camera.credentials_file`
 (`~/.config/porch_watch.env`, mode 600) holds `CAM_USER=...` and `CAM_PASS=...` lines; without one, the
