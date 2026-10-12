@@ -64,7 +64,7 @@ class Check:
 
 class HealthMonitor(threading.Thread):
     def __init__(self, camera_name, checks, notifier=None, check_seconds=60, down_minutes=5, repeat_hours=24,
-                 stop=None):
+                 stop=None, history=None):
         super().__init__(name="health", daemon=True)
         self.camera_name = camera_name
         self.checks = checks
@@ -74,6 +74,7 @@ class HealthMonitor(threading.Thread):
         self.repeat = repeat_hours * 3600
         self.stop_event = stop or threading.Event()
         self.host = socket.gethostname()
+        self.history = history              # daily.History: outages go in the daily report
         self.stats = {"problems": 0, "fixed": 0, "messages": 0, "message_failures": 0}
 
     def run(self):
@@ -115,7 +116,11 @@ class HealthMonitor(threading.Thread):
             return
         if c.down_since is None:
             return
-        c.up_since = c.up_since or now
+        if c.up_since is None:
+            c.up_since = now
+            if self.history and now - c.down_since >= self.grace:
+                self.history.record("outage", check=c.what, start=round(c.down_since), end=round(now),
+                                    detail=c.detail)
         down_for = c.up_since - c.down_since
         if c.alerted:
             text = "✅ {}: {} is working again since {} (down {}, from {})".format(
@@ -132,6 +137,11 @@ class HealthMonitor(threading.Thread):
             self.stats["fixed"] += 1
             c.down_since, c.detail, c.alerted, c.up_since = None, "", False, None
         # else: try again at the next check (the problem stays on record until the message is out)
+
+    def status(self):
+        """[(what, None if working, else (down_since, detail))] for the daily report."""
+        return [(c.what, (c.down_since, c.detail) if c.down_since and not c.up_since else None)
+                for c in self.checks]
 
     def where(self):
         return "{} ({})".format(self.camera_name, self.host)

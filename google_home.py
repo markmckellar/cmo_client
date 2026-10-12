@@ -248,6 +248,7 @@ class Announcer:
         self.language = language
         self.timeout = timeout
         self.stats = {"announced": 0, "failed": 0}
+        self.on_result = None       # callable(ok_speakers, failed_speakers) after each announcement, or None
 
     def text_for(self, labels):
         """The sentence for an event's labels (a list like ['cat', 'animal']), or '' for none."""
@@ -269,6 +270,8 @@ class Announcer:
             return
         failed = {d: err for d, err in results.items() if err}
         ok = [d for d, err in results.items() if not err]
+        if self.on_result:
+            self.on_result(ok, sorted(failed))
         self.stats["announced" if ok else "failed"] += 1
         (log.warning if failed else log.info)("google home: %s said %r on %s%s", name, text, ", ".join(ok) or "no speaker",
                  "; failed: " + "; ".join("{} ({})".format(d, e) for d, e in failed.items()) if failed else "")

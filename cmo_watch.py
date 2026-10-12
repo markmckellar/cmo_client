@@ -138,6 +138,12 @@ DEFAULTS = {
         "repeat_hours": 24.0,            # a reminder while it stays down; 0 = never
         "min_free_gb": 2.0,              # less free disk than this (here, or on a cmo_server) is a problem
     },
+    "report": {
+        # a daily Telegram message with what was seen and the health (see daily.py)
+        "enabled": True,
+        "time": "09:00",                 # local time, HH:MM
+        "history_days": 31,              # how long local/<me_group>/history.jsonl keeps what happened
+    },
     "save_rejects": False,               # keep a grid jpg + json of events with no target, for tuning
     "log_file": "",                     # empty = ~/logs/<me_group>.log (call_ollama.LOG_DIR, or $CMO_LOG_DIR)
 }
@@ -244,6 +250,8 @@ def load_config(path):
     if conf["camera"]["type"] not in CAMERA_TYPES:
         raise SystemExit("error: {}: camera.type = {}: expected {}".format(path, conf["camera"]["type"],
                                                                         " or ".join(CAMERA_TYPES)))
+    if not re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", conf["report"]["time"]):
+        raise SystemExit("error: {}: report.time = {}: expected HH:MM, e.g. 09:00".format(path, conf["report"]["time"]))
     if conf["camera"]["type"] == "rtsp" and not conf["camera"]["url"] and not conf["camera"]["source"]:
         raise SystemExit("error: {}: camera.type = rtsp needs camera.url".format(path))
     base = path.resolve().parent
@@ -363,6 +371,8 @@ class Camera(threading.Thread):
         self.last_frame = time.monotonic()
         self.eof = threading.Event()      # file source ended (or the camera thread stopped)
         self.stats = {"restarts": 0, "stalls": 0}
+        self.history = None         # daily.History, for the daily report
+        self.stalled = False
 
     def name(self):
         """What is being watched, for the log (never with the login)."""
@@ -430,6 +440,9 @@ class Camera(threading.Thread):
                 self.eof.set()
                 break
             self.stats["restarts"] += 1
+            if self.history:
+                self.history.record("camera_restart", stall=self.stalled)
+            self.stalled = False
             errf.seek(0)
             # ffmpeg's error text can hold the camera URL with its password
             err = redact(errf.read().decode(errors="replace").strip()[-300:])
@@ -463,6 +476,7 @@ class Camera(threading.Thread):
             quiet = max(time.monotonic() - newest_at, time.monotonic() - self.last_frame)
             if stall and not self.source and quiet > stall:
                 self.stats["stalls"] += 1
+                self.stalled = True
                 log.warning("camera: STALL, no new video for %.0fs, restarting ffmpeg", quiet)
                 proc.kill()
                 return
@@ -634,7 +648,7 @@ def telegram_notifier(conf):
     return notifier
 
 
-def health_monitor(conf, camera, worker, servers, notifier):
+def health_monitor(conf, camera, worker, servers, notifier, history=None):
     """The health monitor (health.py) when health.enabled, else None. Without a notifier it only logs."""
     h = conf["health"]
     if not h["enabled"]:
@@ -649,7 +663,33 @@ def health_monitor(conf, camera, worker, servers, notifier):
     log.info("health: checking %s every %ss; a problem is reported after %s min%s", ", ".join(c.what for c in checks),
              h["check_seconds"], h["down_minutes"], " on Telegram" if notifier else " (log only, no Telegram)")
     return health.HealthMonitor(conf["me_group"], checks, notifier, h["check_seconds"], h["down_minutes"],
-                                h["repeat_hours"], stop=STOP)
+                                h["repeat_hours"], stop=STOP, history=history)
+
+
+def server_free_bytes(servers):
+    """Free disk on the first cmo_server (its /catcam/health), or None."""
+    if not servers:
+        return None
+    import requests
+    try:
+        return requests.get(servers[0].rstrip("/") + "/catcam/health", timeout=20).json().get("free_bytes")
+    except Exception:
+        return None
+
+
+def daily_reporter(conf, history, health, uploader, servers, notifier, started):
+    """The daily report thread (daily.py) when report.enabled, else None. Without a notifier it only logs."""
+    if not conf["report"]["enabled"]:
+        return None
+    import daily
+    version = daily.code_version(HERE)
+
+    def make(since, now):
+        return daily.build(conf["me_group"], history, since, now, health.status() if health else None,
+                           len(uploader.pending()) if uploader else None, conf["events_dir"],
+                           server_free_bytes(servers), version, started)
+    log.info("daily report at %s%s", conf["report"]["time"], " on Telegram" if notifier else " (log only)")
+    return daily.DailyReporter(conf["me_group"], history, conf["report"]["time"], make, notifier, stop=STOP)
 
 
 def use_cmo_ollama(path):
@@ -665,8 +705,9 @@ class Worker(threading.Thread):
     """Cuts each event's movie once the buffer covers it, asks cmo_ollama about it, and writes the event
     folder for the uploader only when something was found."""
 
-    def __init__(self, conf, events, camera, uploader, announcer=None):
+    def __init__(self, conf, events, camera, uploader, announcer=None, history=None):
         super().__init__(name="worker", daemon=True)
+        self.history = history      # daily.History: every event's result, for the daily report
         self.announcer = announcer
         self.conf = conf
         self.e, self.cl = conf["event"], conf["classifier"]
@@ -701,6 +742,7 @@ class Worker(threading.Thread):
         self.stats["events"] += 1
         if ev.frames < self.conf["motion"]["min_event_frames"]:
             self.stats["skipped_short"] += 1
+            self.record(ev, "short")
             log.info("event: %s %.1fs, %d moving frames: too short, ignored",
                      datetime.fromtimestamp(ev.start).strftime("%H:%M:%S"), ev.end - ev.start, ev.frames)
             return
@@ -752,8 +794,10 @@ class Worker(threading.Thread):
                 log.warning("event: %s %.1fs -> not classified (cmo_ollama failed), dropped (%s)",
                             start.strftime("%H:%M:%S"), dur, took)
                 shutil.rmtree(str(tmp), ignore_errors=True)
+                self.record(ev, "dropped", seconds=secs)
                 return
             self.stats["unclassified"] += 1
+            self.record(ev, "unclassified", seconds=secs)
             labels = {k: False for k in call_ollama.LABELS}
             labels["error"] = True
             log.warning("event: %s %.1fs -> not classified (cmo_ollama failed), saving it anyway (%s)",
@@ -761,6 +805,7 @@ class Worker(threading.Thread):
         hits = [k for k, v in labels.items() if v and k != "error"]
         if not hits and not labels.get("error"):
             log.info("event: %s %.1fs -> no target (%s)", start.strftime("%H:%M:%S"), dur, took)
+            self.record(ev, "no_target", seconds=secs, calls=movie_calls)
             shutil.rmtree(str(tmp), ignore_errors=True)
             if self.conf["save_rejects"] and cands:
                 self.save_reject(ev, cands, dict(llm, labels=labels))
@@ -768,6 +813,8 @@ class Worker(threading.Thread):
         self.stats["matches"] += 1
         log.info("event: %s %.1fs -> MATCH %s (%s)", start.strftime("%H:%M:%S"), dur,
                  ",".join(hits) or "(unclassified)", took)
+        if not labels.get("error"):
+            self.record(ev, "match", seconds=secs, calls=movie_calls, labels=hits)
         if self.announcer:
             self.announcer.announce(hits, name)     # on its own thread, right away (not after the upload)
         best, calls = 0, 0
@@ -789,6 +836,20 @@ class Worker(threading.Thread):
         llm["rep_frame_calls"] = calls
         rep = cands[best] if cands else None
         self.write_event(ev, name, tmp, t0, labels, llm, rep)
+
+    def record(self, ev, result, seconds=None, calls=(), labels=()):
+        """One line in the history for the daily report."""
+        if not self.history:
+            return
+        fields = {"result": result, "start": round(ev.start, 1)}
+        if labels:
+            fields["labels"] = list(labels)
+        if seconds is not None:
+            fields["seconds"] = round(seconds, 1)
+        tokens = [c.get("prompt_tokens") for c in calls if c.get("prompt_tokens")]
+        if tokens:
+            fields["prompt_tokens"] = max(tokens)
+        self.history.record("event", **fields)
 
     def write_event(self, ev, name, tmp, t0, labels, llm, rep):
         movie = tmp / "me_movie.mp4"
@@ -842,6 +903,8 @@ def main(argv=None):
     ap.add_argument("--source", help="play this movie file instead of the camera (testing)")
     ap.add_argument("--exit-on-eof", action="store_true", help="with --source: stop when the file ends")
     ap.add_argument("--no-upload", action="store_true", help="save events but don't upload them")
+    ap.add_argument("--report", action="store_true",
+                    help="print the daily report for the last 24 hours (not sent) and exit")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
     conf = load_config(a.config)
@@ -852,6 +915,13 @@ def main(argv=None):
         use_cmo_ollama(cl["cmo_ollama_dir"])
     except ImportError as e:
         sys.exit("error: no call_ollama.py in classifier.cmo_ollama_dir = {}: {}".format(cl["cmo_ollama_dir"], e))
+    import daily
+    history = daily.History(Path(conf["events_dir"]).parent / "history.jsonl", conf["report"]["history_days"])
+    if a.report:
+        servers = [] if a.no_upload else [x["url"] for x in upload_servers(conf)]
+        print(daily.build(conf["me_group"], history, time.time() - 86400, time.time(), None, None,
+                          conf["events_dir"], server_free_bytes(servers), daily.code_version(HERE)))
+        return 0
     # the same log folder (and rollover) as every camera and the cmo_ollama scripts
     log_file = conf["log_file"] or str(call_ollama.LOG_DIR / (conf["me_group"] + ".log"))
     call_ollama.setup_log_file(log_file, a.verbose)
@@ -888,11 +958,19 @@ def main(argv=None):
     camera = Camera(conf, detector, lambda: worker.oldest_needed(), login)
     detector.size = camera.size
     detector.reset_stream()
-    worker = Worker(conf, events, camera, uploader, google_home_announcer(conf))
-    health = health_monitor(conf, camera, worker, [x["url"] for x in servers if x.get("active", True)], notifier)
+    started = time.time()
+    history.record("start")
+    camera.history = history
+    announcer = google_home_announcer(conf)
+    if announcer:
+        announcer.on_result = lambda ok, failed: history.record("announce", ok=ok, failed=failed)
+    worker = Worker(conf, events, camera, uploader, announcer, history)
+    server_urls = [x["url"] for x in servers if x.get("active", True)]
+    health = health_monitor(conf, camera, worker, server_urls, notifier, history)
+    reporter = daily_reporter(conf, history, health, uploader, server_urls, notifier, started)
 
     signal.signal(signal.SIGTERM, lambda *_: STOP.set())
-    for t in [camera, worker] + [x for x in (uploader, health) if x]:
+    for t in [camera, worker] + [x for x in (uploader, health, reporter) if x]:
         t.start()
     log.info("cmo_watch: %s watching %s (%s) at %dx%d, motion at %dx%d %s fps", conf["me_group"], camera.name(),
              conf["camera"]["type"], conf["camera"]["width"], conf["camera"]["height"], camera.size[0],

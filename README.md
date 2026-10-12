@@ -73,6 +73,33 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   ✅ porch_cam (mckada): the camera is working again since 06:02 (down 12 min, from 05:50)
   ```
 
+- **Daily report** (`daily.py`): at `report.time` (09:00) each camera sends one Telegram message about the
+  last 24 hours: how many times each label was seen, when a raccoon, cat and dog were last seen, the motion
+  events (saved, matched, uncategorized, nothing there, too short), Ollama's times, the busiest hour, the
+  Google Home announcements, the health now and the problems during the day, uploads waiting, free disk,
+  and the code version. What happens is kept in `local/<me_group>/history.jsonl` (31 days), so the report
+  covers restarts too; a report missed while cmo_watch was stopped is sent when it starts again.
+  `cmo_watch.py <camera>.properties --report` prints the report for the last 24 hours, without sending it.
+
+  ```
+  📊 pet_door daily report (picmopetdoor)
+  Oct 11 09:00 → Oct 12 09:00
+
+  Seen: 🦝 raccoon 0 · 🐈 cat 14 · 🐕 dog 0 · 🐾 animal 14 · 🧍 person 16 · 🦵 legs 16
+  Last seen: raccoon Sep 12 (30 days ago) · cat 05:51 · dog Oct 9 (3 days ago)
+
+  Motion events: 120 → 32 saved (30 matched, 2 uncategorized), 72 nothing there, 16 too short
+  Ollama: 104 events, 2.7 s each on average (slowest 3.4 s), 1573 prompt tokens avg
+  Busiest hour: 09:00–10:00 (8 events)
+  Google Home: 4 announcements, every speaker answered
+
+  ✅ Health: everything working (Ollama, the camera, cmo_server http://173.255.215.223:9090/, ...)
+  Problems in the last 24 h: the camera down 1× (12 min)
+  Camera reconnects: 2 (short dropouts, no alert)
+  Waiting to upload: 0 · disk free here: 21.4 GB · on cmo_server: 32.3 GB
+  cmo_watch 403d1f8, running since yesterday 06:05
+  ```
+
 ### What's in an event
 
 | File | |
@@ -100,6 +127,7 @@ unknown key stops cmo_watch with an error. Paths are relative to the file and ma
 | `motion.masks` | `x0,y0,x1,y1` boxes (0-1 of the picture) to ignore, separated by `;` |
 | `camera.input_options` | extra ffmpeg options, as on a command line |
 | `camera.source` | a movie file to play instead of the camera (testing) |
+| `report.*` | the daily report: on/off, the time to send it, how many days of history to keep |
 | `health.*` | the health alerts: on/off, how often to check, how long before a problem is reported, reminders, the disk space limit |
 
 **The camera password** is never in a properties file, git, or a command line. `camera.credentials_file`
