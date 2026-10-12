@@ -1,7 +1,0 @@
-#FROM mohaseeb/raspberrypi3-python-opencv:3.4.2
-FROM song/python3-opencv
-RUN pip install --no-cache-dir flask 
-COPY camera.py camera.py
-COPY main.py main.py
-COPY templates templates
-ENTRYPOINT ["python","main.py"]

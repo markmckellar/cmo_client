@@ -1,0 +1,26 @@
+# The porch camera on mckada (a user service):
+#   cp systemd/cmo_watch_porch_cam.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now cmo_watch_porch_cam
+# (loginctl enable-linger, so it runs without a login)
+[Unit]
+Description=CMO porch camera (cmo_watch: saves people/animal movies, uploads them to cmo_server, alerts)
+Documentation=file://%h/dev/cmo_client/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/cmo_client
+Environment=PYTHONUNBUFFERED=1
+# pipx puts telegram-send in ~/.local/bin, which isn't on the systemd user PATH
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The camera login is read from camera.credentials_file (~/.config/porch_watch.env), not the environment
+ExecStart=%h/dev/cmo_client/.venv/bin/python cmo_watch.py porch_cam.properties
+# cmo_watch logs to its log_file (~/logs/porch_watch.log); the journal only gets crashes
+StandardOutput=null
+StandardError=journal
+# SIGTERM: finish the open segment, write and upload events already detected
+TimeoutStopSec=240
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

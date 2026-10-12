@@ -1,0 +1,6 @@
+# For a machine that runs cmo_watch.py in a venv (python3 -m venv .venv; .venv/bin/pip install -r
+# requirements.txt). The pet door Pi uses Raspberry Pi OS's own python3-numpy, python3-pil and
+# python3-requests (numpy 1.16, Pillow 5.4, requests 2.21 on Python 3.7), which work too.
+numpy
+pillow
+requests

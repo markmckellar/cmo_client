@@ -1,6 +1,5 @@
-capture_motion/images
-capture_motion/videos
-capture_motion/uploads
-*.jpg
-*.mp4
-**/__pycache__/
+# each camera's ring buffer, events waiting for upload, and rejects (local/<me_group>/)
+local/
+.venv/
+__pycache__/
+*.pyc

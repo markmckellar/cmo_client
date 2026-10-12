@@ -1,3 +1,0 @@
-# build a docker
-docker build -t cv_docker_test -f cv_docker_test  .
-docker run -it -d --rm  -v `pwd`/images:/images --device /dev/video0 --name cv_docker_test cv_docker_test

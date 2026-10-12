@@ -1,6 +1,0 @@
-
-
-
-# build a docker
-docker build -t cv_docker_stream_vid -f cv_docker_stream_vid  .
-docker run -it --rm  -d -p 5000:5000 --device /dev/video0 --name cv_docker_stream_vid cv_docker_stream_vid
