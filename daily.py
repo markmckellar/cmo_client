@@ -24,7 +24,6 @@ import json
 import logging
 import shutil
 import socket
-import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
@@ -113,16 +112,6 @@ def minutes(seconds):
     return "{} min".format(m) if m < 120 else "{:.1f} h".format(m / 60)
 
 
-def code_version(here):
-    """The cmo_client commit running, e.g. '403d1f8'."""
-    try:
-        r = subprocess.run(["git", "-C", str(here), "log", "-1", "--format=%h"], stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL, timeout=10)
-        return r.stdout.decode().strip() or "?"
-    except (OSError, subprocess.SubprocessError):
-        return "?"
-
-
 def build(name, history, since, now, health_now=None, pending_uploads=None, events_dir=None, server_free=None,
           version="?", started=None):
     """The report text for [since, now). health_now: [(what, None or (down_since, detail))] from the running
@@ -208,7 +197,7 @@ def build(name, history, since, now, health_now=None, pending_uploads=None, even
         text = " · ".join(extra)
         lines.append(text[0].upper() + text[1:])
     starts = sum(1 for r in rows if r["kind"] == "start")
-    lines.append("cmo_watch {}{}{}".format(version, ", running since {}".format(ago(started, now)) if started else "",
+    lines.append("{}{}{}".format(version, ", running since {}".format(ago(started, now)) if started else "",
                                           ", started {}× in the last 24 h".format(starts) if starts > 1 else ""))
     return "\n".join(lines)
 

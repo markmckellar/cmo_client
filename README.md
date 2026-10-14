@@ -81,7 +81,7 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   last 24 hours: how many times each label was seen, when a raccoon, cat and dog were last seen, the motion
   events (saved, matched, uncategorized, nothing there, too short), Ollama's times, the busiest hour, the
   Google Home announcements, the health now and the problems during the day, uploads waiting, free disk,
-  and the code version. What happens is kept in `local/<me_group>/history.jsonl` (31 days), so the report
+  and the code versions (see [Versions](#versions)). What happens is kept in `local/<me_group>/history.jsonl` (31 days), so the report
   covers restarts too; a report missed while cmo_watch was stopped is sent when it starts again.
   `cmo_watch.py <camera>.properties --report` prints the report for the last 24 hours, without sending it.
   To have a running camera send one now (the 09:00 one still comes):
@@ -235,6 +235,16 @@ Each camera runs as a service, started at boot and restarted if it dies. Use the
 minute or two: it finishes the open segment, and classifies and uploads the events already detected
 (events not uploaded yet are sent after the next start). To run one by hand for a test, stop its
 service first, and start it again afterwards.
+
+## Versions
+
+Versioned the same way as every cmo repo (see cmo_ollama's README): `cmo_client:1.3.0` on the `v1.3.0`
+release, `1.3.0+4` four commits after it, `1.3.0+4.dirty` with uncommitted changes too (`version.py`).
+cmo_watch logs `cmo_client:<version>, cmo_ollama:<version>` when it starts and in every stats line, the
+daily report ends with it, and each event's `me_data.json` has
+`"created_by": {"cmo_client": "1.3.0", "cmo_ollama": "1.2.0"}`. cmo_ollama's version there is the one its
+scripts reported for that event's calls, so it is right even after a `git pull` of cmo_ollama without a
+restart. To release, commit everything and run `./release.bash patch|minor|major [message]`.
 
 ## Left out of the porch camera's old code
 

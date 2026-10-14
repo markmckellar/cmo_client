@@ -53,6 +53,7 @@ from pathlib import Path
 
 import numpy as np
 
+import version
 from cmo_upload import CmoUploader
 from vision import FramePicker, MotionScorer, frame_rank, make_grid, to_jpeg
 
@@ -696,7 +697,7 @@ def daily_reporter(conf, history, health, uploader, servers, notifier, started):
     if not conf["report"]["enabled"]:
         return None
     import daily
-    version = daily.code_version(HERE)
+    version = code()
 
     def make(since, now):
         return daily.build(conf["me_group"], history, since, now, health.status() if health else None,
@@ -704,6 +705,19 @@ def daily_reporter(conf, history, health, uploader, servers, notifier, started):
                            server_free_bytes(servers), version, started)
     log.info("daily report at %s%s", conf["report"]["time"], " on Telegram" if notifier else " (log only)")
     return daily.DailyReporter(conf["me_group"], history, conf["report"]["time"], make, notifier, stop=STOP)
+
+
+def code():
+    """The code running, for log lines and the daily report: "cmo_client:1.3.0, cmo_ollama:1.2.0"."""
+    return "{}, {}".format(version.CODE, call_ollama.code() if call_ollama else "cmo_ollama:unknown")
+
+
+def created_by(calls):
+    """me_data.json's created_by: {"cmo_client": "1.3.0", "cmo_ollama": "1.2.0"}. cmo_ollama's version is the
+    one its scripts reported for this event's calls (they read it on every call, so a git pull there shows up
+    without a restart), else what it says now."""
+    ollama = next((c["code"] for c in calls if c.get("code")), None) or call_ollama.code()
+    return {"cmo_client": version.VERSION, "cmo_ollama": ollama.split(":", 1)[-1]}
 
 
 def use_cmo_ollama(path):
@@ -890,6 +904,8 @@ class Worker(threading.Thread):
             # last entry, and the server's brief listing its start and end. The frames in between went
             # unread and made up most of the file.
             "me_delta_array": [delta(*d) for d in ev.deltas[:1] + ev.deltas[1:][-1:]],
+            # the code that made this event and classified it, e.g. {"cmo_client": "1.3.0", "cmo_ollama": "1.2.0"}
+            "created_by": created_by((llm or {}).get("ollama_calls") or []),
             "cmo_watch": {"camera": self.conf["camera"]["type"],
                           "movie_start": movie_start.isoformat(timespec="milliseconds"),
                           "motion_frames": ev.frames, "peak_motion": round(ev.peak_motion, 4),
@@ -937,7 +953,7 @@ def main(argv=None):
     if a.report:
         servers = [] if a.no_upload else [x["url"] for x in upload_servers(conf)]
         print(daily.build(conf["me_group"], history, time.time() - 86400, time.time(), None, None,
-                          conf["events_dir"], server_free_bytes(servers), daily.code_version(HERE)))
+                          conf["events_dir"], server_free_bytes(servers), code()))
         return 0
     # the same log folder (and rollover) as every camera and the cmo_ollama scripts
     log_file = conf["log_file"] or str(call_ollama.LOG_DIR / (conf["me_group"] + ".log"))
@@ -993,6 +1009,7 @@ def main(argv=None):
         signal.signal(signal.SIGUSR1, lambda *_: reporter.request())
     for t in [camera, worker] + [x for x in (uploader, health, reporter) if x]:
         t.start()
+    log.info("cmo_watch: %s", code())
     log.info("cmo_watch: %s watching %s (%s) at %dx%d, motion at %dx%d %s fps", conf["me_group"], camera.name(),
              conf["camera"]["type"], conf["camera"]["width"], conf["camera"]["height"], camera.size[0],
              camera.size[1], conf["motion"]["fps"])
@@ -1003,8 +1020,8 @@ def main(argv=None):
                 break
             if time.monotonic() - last_report > 600:
                 last_report = time.monotonic()
-                log.info("stats: %s camera=%s upload=%s", worker.stats, camera.stats,
-                         uploader.stats if uploader else None)
+                log.info("stats: %s camera=%s upload=%s (%s)", worker.stats, camera.stats,
+                         uploader.stats if uploader else None, code())
     except KeyboardInterrupt:
         pass
     log.info("stopping...")
@@ -1016,7 +1033,8 @@ def main(argv=None):
         uploader.poke()        # end its scan loop (STOP is set) before the final pass, so nothing is sent twice
         uploader.join(30)
         uploader.finish(60)    # sends what it can, the rest goes after the next start
-    log.info("stats: %s camera=%s upload=%s", worker.stats, camera.stats, uploader.stats if uploader else None)
+    log.info("stats: %s camera=%s upload=%s (%s)", worker.stats, camera.stats, uploader.stats if uploader else None,
+             code())
     return 0
 
 
