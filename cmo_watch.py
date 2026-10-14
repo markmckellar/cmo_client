@@ -100,6 +100,9 @@ DEFAULTS = {
         "cmo_ollama_dir": "~/dev/cmo_ollama",
         "model": "qwen3-vl:8b",
         "question": "person_animal_question",
+        # extra call_ollama_movie.bash options for this camera, as on a command line, e.g. "-s motion -c"
+        # (see that script); empty = the defaults in ollama_common.bash, the same for every camera
+        "movie_options": [],
         # best moving frames kept during an event (at least min_gap seconds apart), to choose
         # me_rep_image.jpg from
         "max_frames": 6, "min_gap": 2.0,
@@ -208,6 +211,7 @@ def parse_bool(v):
 PARSERS = {
     "camera.source": lambda v: v or None,                  # empty = the camera
     "camera.input_options": shlex.split,                   # as on a command line
+    "classifier.movie_options": shlex.split,               # as on a command line
     "motion.masks": parse_masks,
     "upload.servers": lambda v: [{"url": u, "active": True} for u in split_list(v)],
 }
@@ -788,10 +792,12 @@ class Worker(threading.Thread):
             log.error("event %s: no movie, not saved", name)
             return
         movie_calls = []
-        labels, secs = call_ollama.classify_movie(movie, self.cl["model"], self.cl["question"], stats=movie_calls)
+        labels, secs = call_ollama.classify_movie(movie, self.cl["model"], self.cl["question"],
+                                                 options=self.cl["movie_options"], stats=movie_calls)
         self.stats["llm_seconds"] += secs
         # seconds: the whole classification as seen from here; ollama: what the Ollama calls took
         llm = {"seconds": round(secs, 1), "question": self.cl["question"],
+               "movie_options": " ".join(self.cl["movie_options"]),
                "ollama": call_ollama.summarize(movie_calls), "ollama_calls": movie_calls}
         took = "{:.1f}s; {}".format(secs, call_ollama.describe(movie_calls))
         if labels is None:
@@ -943,7 +949,8 @@ def main(argv=None):
     err = call_ollama.check_setup()
     if err:
         sys.exit("error: " + err)
-    log.info("classifying with %s (%s, question %s)", call_ollama.HERE, cl["model"], cl["question"])
+    log.info("classifying with %s (%s, question %s%s)", call_ollama.HERE, cl["model"], cl["question"],
+             ", options " + " ".join(cl["movie_options"]) if cl["movie_options"] else "")
 
     login = (None, None)
     if conf["camera"]["type"] == "rtsp" and not conf["camera"]["source"]:
