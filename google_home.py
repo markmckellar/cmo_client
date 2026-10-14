@@ -240,25 +240,63 @@ def say(devices, text, language="en", timeout=10):
 class Announcer:
     """Speaks a message for the labels of an event, on its own thread so the camera never waits.
     messages: {label: text}; a label with no text (or not listed) is not announced. Labels are announced
-    in the order of messages, all in one message."""
+    in the order of messages, all in one message.
 
-    def __init__(self, devices, messages, language="en", timeout=10):
+    quiet_minutes: a label is announced again only after that long with no event showing it, so a cat
+    sitting at the door, which makes one event after another, is announced once. Each label has its own
+    clock: a raccoon is still announced while the cat sits there. 0 = announce every event.
+    reminders: {label: text} said instead, at most every remind_minutes, while that label keeps showing
+    up within quiet_minutes ("The cat is still at the door"); a label with no text gets no reminder."""
+
+    def __init__(self, devices, messages, language="en", timeout=10, quiet_minutes=0, reminders=None,
+                 remind_minutes=0):
         self.devices = devices
         self.messages = {k: v.strip() for k, v in messages.items() if v and v.strip()}
         self.language = language
         self.timeout = timeout
+        self.quiet = quiet_minutes * 60
+        self.reminders = {k: v.strip() for k, v in (reminders or {}).items() if v and v.strip()}
+        self.remind = remind_minutes * 60
+        self.seen = {}              # label: time.monotonic() of the last event that showed it
+        self.said = {}              # label: when its message or reminder was last said
         self.stats = {"announced": 0, "failed": 0}
         self.on_result = None       # callable(ok_speakers, failed_speakers) after each announcement, or None
 
-    def text_for(self, labels):
-        """The sentence for an event's labels (a list like ['cat', 'animal']), or '' for none."""
-        texts = [t if t[-1] in ".!?" else t + "." for label, t in self.messages.items() if label in labels]
+    @staticmethod
+    def _join(texts):
+        texts = [t if t[-1] in ".!?" else t + "." for t in texts]
         return " ".join(texts) if len(texts) > 1 else "".join(texts)
 
+    def text_for(self, labels):
+        """The sentence for an event's labels (a list like ['cat', 'animal']), or '' for none."""
+        return self._join([t for label, t in self.messages.items() if label in labels])
+
+    def text_now(self, labels, now=None):
+        """text_for, less the labels still within quiet_minutes of their last event (or their reminder,
+        when one is due). Records the event, so call it once per event."""
+        now = time.monotonic() if now is None else now
+        texts = []
+        for label, text in self.messages.items():
+            if label not in labels:
+                continue
+            last = self.seen.get(label)
+            self.seen[label] = now
+            if not self.quiet or last is None or now - last >= self.quiet:
+                texts.append(text)
+            elif label in self.reminders and self.remind and now - self.said.get(label, now) >= self.remind:
+                texts.append(self.reminders[label])
+            else:
+                continue
+            self.said[label] = now
+        return self._join(texts)
+
     def announce(self, labels, name=""):
-        text = self.text_for(labels)
+        text = self.text_now(labels)
         if text and self.devices:
             threading.Thread(target=self._say, args=(text, name), name="google_home", daemon=True).start()
+        elif self.text_for(labels):
+            log.info("google home: %s: quiet, %s seen less than %.0f min ago", name,
+                     ", ".join(l for l in self.messages if l in labels), self.quiet / 60)
         return text
 
     def _say(self, text, name):

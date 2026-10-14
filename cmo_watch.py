@@ -128,6 +128,11 @@ DEFAULTS = {
         "language": "en",
         # message for each label; empty = no announcement. Several labels: their messages in this order.
         "message": {"raccoon": "", "cat": "", "dog": "", "person": "", "legs": "", "animal": ""},
+        # a label is said again only after quiet_minutes with no event showing it; 0 = every event
+        "quiet_minutes": 0.0,
+        # said instead, every remind_minutes, while a label keeps showing up; empty = no reminder
+        "reminder": {"raccoon": "", "cat": "", "dog": "", "person": "", "legs": "", "animal": ""},
+        "remind_minutes": 15.0,
     },
     "health": {
         # a Telegram message when Ollama, the camera, a cmo_server or a disk is down, and when it is fixed
@@ -627,9 +632,14 @@ def google_home_announcer(conf):
     devices = parse_devices(gh["devices"])
     if not devices:
         raise SystemExit("error: google_home.enabled but google_home.devices is empty")
-    announcer = Announcer(devices, gh["message"], gh["language"])
+    announcer = Announcer(devices, gh["message"], gh["language"], quiet_minutes=gh["quiet_minutes"],
+                          reminders=gh["reminder"], remind_minutes=gh["remind_minutes"])
     log.info("google home: %s on %s", ", ".join("{} -> {!r}".format(k, v) for k, v in announcer.messages.items())
              or "no messages set", ", ".join(devices))
+    if announcer.quiet:
+        log.info("google home: quiet for %.0f min after each label%s", gh["quiet_minutes"],
+                 "".join("; {} reminder every {:.0f} min: {!r}".format(k, gh["remind_minutes"], v)
+                         for k, v in announcer.reminders.items()) if announcer.remind else "")
     return announcer
 
 

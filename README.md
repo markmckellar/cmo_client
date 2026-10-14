@@ -49,7 +49,11 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   `"error": true`) or dropped.
 - **Google Home** (`google_home.py`): right after a match, the message set for its labels
   (`google_home.message.cat`, `.raccoon`, ...) is spoken on every speaker in `google_home.devices` at once,
-  on its own thread. A speaker that doesn't answer is skipped and logged.
+  on its own thread. A speaker that doesn't answer is skipped and logged. A label is said again only after
+  `google_home.quiet_minutes` (10) with no event showing it, so a cat sitting at the door is announced
+  once, not after every event; each label has its own clock, so a raccoon still gets through. While the
+  cat stays, `google_home.reminder.cat` ("The cat is still at the door") is said every
+  `google_home.remind_minutes` (15). Telegram still gets every event.
 - **Uploading** (`cmo_upload.py`): each event goes to every server in `upload.servers` (empty: the
   `cmo_server` in cmo_ollama's `ollama_common.bash`, shared by every camera): `me_ollama.json`, the movie,
   the picture, and `me_data.json` last, so a half-uploaded event never shows up. A failed upload is retried
