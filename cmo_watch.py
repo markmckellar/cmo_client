@@ -870,9 +870,10 @@ class Worker(threading.Thread):
             "me_json_name": "me_data.json", "me_video_name": "me_movie.mp4",
             "me_rep_image": "me_rep_image.jpg" if rep is not None else "",
             "me_image_array": [],
-            # one entry per analysed frame (motion.fps) from the first motion to the end of the event; the
-            # web client takes the event's start and end time from the first and last one
-            "me_delta_array": [delta(*d) for d in ev.deltas],
+            # the first motion and the end of the event: the web client takes the event's end time from the
+            # last entry, and the server's brief listing its start and end. The frames in between went
+            # unread and made up most of the file.
+            "me_delta_array": [delta(*d) for d in ev.deltas[:1] + ev.deltas[1:][-1:]],
             "cmo_watch": {"camera": self.conf["camera"]["type"],
                           "movie_start": movie_start.isoformat(timespec="milliseconds"),
                           "motion_frames": ev.frames, "peak_motion": round(ev.peak_motion, 4),

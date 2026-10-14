@@ -110,7 +110,7 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
 | `me_movie.mp4` | real time, from `pre_roll` before the motion to `post_roll` after it |
 | `me_rep_image.jpg` | the frame that best shows what matched |
 | `me_ollama.json` | `{"legs": false, "person": true, "cat": false, ...}` |
-| `me_data.json` | `me_name`, `me_group`, `me_event_group` (the day), `me_time` (movie length), `me_frame_count`, `me_delta_array` (one entry per analysed frame), and `cmo_watch`: the camera type, labels, model, and the Ollama calls' context, tokens and time (`llm`) |
+| `me_data.json` | `me_name`, `me_group`, `me_event_group` (the day), `me_time` (movie length), `me_frame_count`, `me_delta_array` (two entries: the first motion and the end of the event), and `cmo_watch`: the camera type, labels, model, and the Ollama calls' context, tokens and time (`llm`) |
 
 ## Settings: `<camera>.properties`
 
