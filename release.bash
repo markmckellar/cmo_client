@@ -12,8 +12,8 @@
 #
 # The code reads its version from these tags (git describe), so a log line or a JSON file says
 # e.g. cmo_ollama:1.3.0, or cmo_ollama:1.3.0+4 four commits after it, or 1.3.0+4.dirty with
-# uncommitted changes. With a pom.xml (cmo_server) or package.json (cmo_vue_client), their version
-# is set to the new one and committed first, so it matches the tag.
+# uncommitted changes. With a pom.xml (cmo_server) or package.json and package-lock.json
+# (cmo_vue_client), their version is set to the new one and committed first, so it matches the tag.
 #
 # The tag is only made here; the script prints the command that pushes it.
 
@@ -53,6 +53,11 @@ if [ -f pom.xml ]; then
 fi
 if [ -f package.json ]; then
   sed -i "0,/\"version\": *\"[^\"]*\"/s//\"version\": \"$version\"/" package.json
+fi
+if [ -f package-lock.json ]; then
+  # the lock file's own version, at the top and for the root package (""), as npm writes them
+  jq --arg v "$version" --indent 2 '.version = $v | if .packages[""] then .packages[""].version = $v else . end' \
+    package-lock.json > package-lock.json.tmp && mv package-lock.json.tmp package-lock.json
 fi
 if [ -n "$(git status --porcelain)" ]; then
   git commit -q -am "Release $version"
