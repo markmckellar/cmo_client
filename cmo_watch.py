@@ -891,7 +891,7 @@ class Worker(threading.Thread):
 
         def delta(t, score, moving):
             return {"contours": [], "occupied": bool(moving), "motion": round(score, 4),
-                    "event_time_iso": datetime.fromtimestamp(t).isoformat(timespec="milliseconds"),
+                    "event_time_iso": datetime.fromtimestamp(t).astimezone().isoformat(timespec="milliseconds"),
                     "event_time_ms": round((t - t0) * 1000, 1), "event_start_time": 0}
 
         me_data = {
