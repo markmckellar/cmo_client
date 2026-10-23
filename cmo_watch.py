@@ -7,7 +7,9 @@ own settings file (pet_door.properties, porch_cam.properties, see README.md):
   .venv/bin/python cmo_watch.py porch_cam.properties
 
 camera.type says how the video arrives:
-  v4l2   a camera with its own H.264 encoder on this machine (the pet door Pi's /dev/video0)
+  v4l2   a camera with its own H.264 encoder on this machine (the old pet door Pi's /dev/video0)
+  rpicam a Raspberry Pi camera on the libcamera stack (Raspberry Pi OS 11 and newer, the pet door Pi):
+         rpicam-vid encodes H.264 on the Pi's hardware encoder and pipes it to ffmpeg
   rtsp   a network camera's RTSP stream (the porch camera). The login comes from camera.credentials_file
          and never goes on a command line: ffmpeg is given the URL in a private (mode 600) list file.
 
@@ -67,9 +69,10 @@ STOP = threading.Event()
 DEFAULTS = {
     "me_group": "",                      # the camera's name on cmo_server (pet_door, porch_cam); required
     "camera": {
-        "type": "v4l2",                  # v4l2 (a local camera with an H.264 encoder) or rtsp (a network camera)
-        # v4l2
-        "device": "/dev/video0",
+        "type": "v4l2",                  # v4l2 (a local camera with an H.264 encoder), rpicam (a Pi camera on
+                                         # libcamera, through rpicam-vid) or rtsp (a network camera)
+        # v4l2 and rpicam
+        "device": "/dev/video0",         # v4l2 only
         "bitrate": 2000000,              # bits/s of the camera's H.264 encoder
         "keyframe_seconds": 1,           # where a movie can start; also how finely segments are cut
         # rtsp: the URL without the login, which comes from credentials_file (CAM_USER=..., CAM_PASS=...
@@ -77,8 +80,9 @@ DEFAULTS = {
         "url": "",
         "credentials_file": "",
         "audio": False,                  # also record the camera's audio (converted to AAC)
-        # both: the size of the camera's video (v4l2: the size asked for; rtsp: the stream's size, used for
-        # the motion check's frames) and, for v4l2, its frame rate
+        "rpicam_options": [],            # rpicam: extra rpicam-vid options, e.g. ["--hflip", "--vflip"]
+        # all: the size of the camera's video (v4l2, rpicam: the size asked for; rtsp: the stream's size, used
+        # for the motion check's frames) and, for v4l2 and rpicam, its frame rate
         "width": 640, "height": 480, "fps": 30,
         "input_options": [],             # extra ffmpeg options before -i, e.g. ["-c:v", "h264_mmal"]
         "source": None,                  # a movie file instead of the camera (for testing)
@@ -156,7 +160,7 @@ DEFAULTS = {
     "save_rejects": False,               # keep a grid jpg + json of events with no target, for tuning
     "log_file": "",                     # empty = ~/logs/<me_group>.log (call_ollama.LOG_DIR, or $CMO_LOG_DIR)
 }
-CAMERA_TYPES = ("v4l2", "rtsp")
+CAMERA_TYPES = ("v4l2", "rpicam", "rtsp")
 
 
 # ---- config file ----------------------------------------------------------
@@ -212,6 +216,7 @@ def parse_bool(v):
 PARSERS = {
     "camera.source": lambda v: v or None,                  # empty = the camera
     "camera.input_options": shlex.split,                   # as on a command line
+    "camera.rpicam_options": shlex.split,                  # as on a command line
     "classifier.movie_options": shlex.split,               # as on a command line
     "motion.masks": parse_masks,
     "upload.servers": lambda v: [{"url": u, "active": True} for u in split_list(v)],
@@ -378,6 +383,7 @@ class Camera(threading.Thread):
             w, h = self.c["width"], self.c["height"]
         self.size = analysis_size(w, h, self.m["analysis_width"])
         self.proc = None
+        self.rpicam = None          # rpicam-vid, feeding ffmpeg (camera.type rpicam)
         self.last_frame = time.monotonic()
         self.eof = threading.Event()      # file source ended (or the camera thread stopped)
         self.stats = {"restarts": 0, "stalls": 0}
@@ -386,7 +392,7 @@ class Camera(threading.Thread):
 
     def name(self):
         """What is being watched, for the log (never with the login)."""
-        return self.source or (self.c["url"] if self.type == "rtsp" else self.c["device"])
+        return self.source or {"rtsp": self.c["url"], "rpicam": "the Pi camera"}.get(self.type, self.c["device"])
 
     def setup_camera(self):
         """The camera's H.264 encoder: a keyframe every keyframe_seconds, and SPS/PPS repeated before each
@@ -398,6 +404,15 @@ class Camera(threading.Thread):
                            stderr=subprocess.PIPE)
         if r.returncode != 0:
             log.warning("camera: v4l2-ctl -c %s failed: %s", ctrls, r.stderr.decode(errors="replace").strip())
+
+    def rpicam_command(self):
+        """rpicam-vid writing the camera's H.264 to stdout: a keyframe every keyframe_seconds, with SPS/PPS
+        before each one (--inline) so every segment can be decoded on its own."""
+        c = self.c
+        return (["rpicam-vid", "-t", "0", "-n", "--verbose", "0", "--codec", "h264", "--inline", "--flush",
+                 "--intra", str(int(c["fps"] * c["keyframe_seconds"])), "--bitrate", str(int(c["bitrate"])),
+                 "--width", str(c["width"]), "--height", str(c["height"]), "--framerate", str(c["fps"])]
+                + list(c["rpicam_options"]) + ["-o", "-"])
 
     def command(self, rtsp_input=()):
         """The ffmpeg command. rtsp_input: the arguments from ffmpeg_input() that open the camera."""
@@ -412,6 +427,9 @@ class Camera(threading.Thread):
             if c["audio"]:
                 # MP4 can't hold the G.711 audio such cameras send: convert just the audio to AAC
                 audio = ["-map", "0:a?", "-c:a", "aac", "-b:a", "32k"]
+        elif self.type == "rpicam":
+            # raw H.264 has no timestamps: ffmpeg makes them from the frame rate
+            cmd += ["-fflags", "+genpts", "-f", "h264", "-framerate", str(c["fps"]), "-i", "pipe:0"]
         else:
             cmd += ["-f", "v4l2", "-input_format", "h264", "-framerate", str(c["fps"]),
                     "-video_size", "{}x{}".format(c["width"], c["height"]), "-i", c["device"]]
@@ -434,9 +452,16 @@ class Camera(threading.Thread):
             t0 = time.monotonic()
             # stderr to a file, not a pipe: a long run could fill the pipe and block ffmpeg
             errf = tempfile.TemporaryFile()
+            stdin = subprocess.DEVNULL
+            if self.type == "rpicam" and not self.source:
+                self.rpicam = subprocess.Popen(self.rpicam_command(), stdin=subprocess.DEVNULL,
+                                               stdout=subprocess.PIPE, stderr=errf)
+                stdin = self.rpicam.stdout
             with (ffmpeg_input(self.url) if self.url and not self.source else contextlib.nullcontext(())) as inp:
-                self.proc = subprocess.Popen(self.command(inp), stdin=subprocess.DEVNULL,
+                self.proc = subprocess.Popen(self.command(inp), stdin=stdin,
                                              stdout=subprocess.PIPE, stderr=errf, bufsize=0)
+                if self.rpicam:
+                    self.rpicam.stdout.close()      # ffmpeg holds it now; rpicam-vid gets SIGPIPE if ffmpeg dies
                 self.last_frame = time.monotonic()
                 watchdog = threading.Thread(target=self.watch, args=(self.proc,), name="watchdog", daemon=True)
                 watchdog.start()
@@ -493,14 +518,21 @@ class Camera(threading.Thread):
             STOP.wait(2)
 
     def stop_ffmpeg(self):
-        p = self.proc
-        if p and p.poll() is None:
-            p.terminate()          # lets ffmpeg finish the current segment's MP4 header
-            try:
-                p.wait(5)
-            except subprocess.TimeoutExpired:
-                p.kill()
-                p.wait()
+        # Keep reading ffmpeg's frames: with nobody reading, the pipe fills, ffmpeg blocks writing to it and
+        # never gets to finish the current segment's MP4 header before it is killed
+        if self.proc and self.proc.poll() is None:
+            threading.Thread(target=lambda out=self.proc.stdout: all(iter(lambda: out.read(65536), b"")),
+                             name="drain", daemon=True).start()
+        # rpicam-vid first, so ffmpeg sees the end of its input and finishes the current segment
+        for p in (self.rpicam, self.proc):
+            if p and p.poll() is None:
+                p.terminate()          # lets ffmpeg finish the current segment's MP4 header
+                try:
+                    p.wait(5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
+        self.rpicam = None
 
     def segments(self):
         """[(start_wall_time, path)] sorted by start."""
@@ -958,7 +990,8 @@ def main(argv=None):
     # the same log folder (and rollover) as every camera and the cmo_ollama scripts
     log_file = conf["log_file"] or str(call_ollama.LOG_DIR / (conf["me_group"] + ".log"))
     call_ollama.setup_log_file(log_file, a.verbose)
-    for tool in ("ffmpeg", "ffprobe"):
+    tools = ("ffmpeg", "ffprobe") + (("rpicam-vid",) if conf["camera"]["type"] == "rpicam" else ())
+    for tool in tools:
         if not shutil.which(tool):
             sys.exit("error: {} not found on PATH".format(tool))
 

@@ -19,6 +19,9 @@ StandardOutput=null
 StandardError=journal
 # SIGTERM: finish the open segment, write and upload events already detected
 TimeoutStopSec=240
+# SIGTERM to cmo_watch only: it stops its own ffmpeg. With the default (every process at once) the open
+# segment's MP4 is cut off before ffmpeg can finish it.
+KillMode=mixed
 Restart=always
 RestartSec=15
 

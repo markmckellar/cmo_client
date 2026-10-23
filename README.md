@@ -7,8 +7,8 @@ each camera's settings file:
 
 | | `pet_door.properties` | `porch_cam.properties` |
 |---|---|---|
-| Runs on | the pet door Pi (`picmopetdoor`, Python 3.7) | mckada (in `.venv`) |
-| Video (`camera.type`) | `v4l2`: the Pi camera's own H.264 encoder, 1296x972 | `rtsp`: the Jarnex camera's 640x360 H.264 sub stream, with audio |
+| Runs on | the pet door Pi 4 (`picmopetdoor`, Python 3.13) | mckada (in `.venv`) |
+| Video (`camera.type`) | `rpicam`: rpicam-vid, the Pi's H.264 encoder, 1296x972 | `rtsp`: the Jarnex camera's 640x360 H.264 sub stream, with audio |
 | Name on cmo_server (`me_group`) | `pet_door` | `porch_cam` |
 | Telegram bot (`telegram.config`) | that machine's telegram-send config: @DeCatsBot | that machine's: the porch bot |
 | Google Home (`google_home.*`) | cat and raccoon messages on 3 speakers | off |
@@ -165,8 +165,9 @@ rolled over at 5 MB; `CMO_LOG_DIR` moves them and cmo_ollama's `call_ollama.log`
 
 ### Setup
 
-- **Pi** (Raspberry Pi OS 10, Python 3.7): `python3-numpy`, `python3-pil`, `python3-requests`, `ffmpeg`
-  and `v4l2-ctl` from the OS, no venv.
+- **Pi** (Raspberry Pi 4, Raspberry Pi OS 13, Python 3.13, user `mm`): `python3-numpy`, `python3-pil`,
+  `python3-requests`, `ffmpeg`, `jq`, `jo` and `pipx` from the OS, no venv. The camera is recorded with
+  `rpicam-vid` (`camera.type = rpicam`), which comes with the OS.
 - **mckada**: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, and `ffmpeg`.
 - Both: an up-to-date `~/dev/cmo_ollama` (with `jq` and `curl`).
 
@@ -174,17 +175,9 @@ rolled over at 5 MB; `CMO_LOG_DIR` moves them and cmo_ollama's `call_ollama.log`
 
 Each machine's `~/.config/telegram-send.conf` (`telegram-send --configure`, then `chmod 600`) holds its
 camera's bot token; the token never goes in a properties file or git. `telegram.config` can point at
-another file, e.g. for two cameras on one machine with different bots. On the Pi, telegram-send 0.34 is
-in its own venv, as the newest version that runs on Python 3.7:
-
-```sh
-python3 -m venv ~/.local/telegram-send-venv
-~/.local/telegram-send-venv/bin/pip install --upgrade "pip<24.1"
-~/.local/telegram-send-venv/bin/pip install "telegram-send==0.34" "python-telegram-bot==13.15"
-ln -s ~/.local/telegram-send-venv/bin/telegram-send ~/.local/bin/telegram-send
-```
-
-On mckada it is `pipx install telegram-send`.
+another file, e.g. for two cameras on one machine with different bots. On both machines it is
+`pipx install telegram-send`. Run `--configure` on the machine whose bot it is: the Pi's is @DeCatsBot,
+mckada's @DePorchBot.
 
 ### `broadcast.py`: say something on the Google Home speakers
 
@@ -221,7 +214,7 @@ systemctl --user restart cmo_watch_porch_cam
 Each camera runs as a service, started at boot and restarted if it dies. Use these instead of running
 `cmo_watch.py` by hand: only one program at a time can use a camera's buffer (and the Pi camera).
 
-| | Pet door (on the Pi: `ssh pi@192.168.1.250`) | Porch (on mckada) |
+| | Pet door (on the Pi: `ssh mm@192.168.1.146`) | Porch (on mckada) |
 |---|---|---|
 | Is it running? | `systemctl status cmo_watch_pet_door` | `systemctl --user status cmo_watch_porch_cam` |
 | Stop | `sudo systemctl stop cmo_watch_pet_door` | `systemctl --user stop cmo_watch_porch_cam` |
