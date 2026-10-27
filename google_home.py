@@ -246,7 +246,10 @@ class Announcer:
     sitting at the door, which makes one event after another, is announced once. Each label has its own
     clock: a raccoon is still announced while the cat sits there. 0 = announce every event.
     reminders: {label: text} said instead, at most every remind_minutes, while that label keeps showing
-    up within quiet_minutes ("The cat is still at the door"); a label with no text gets no reminder."""
+    up within quiet_minutes ("The cat is still at the door"); a label with no text gets no reminder.
+    An event's labels that its early check already announced (cmo_watch's google_home.early) are passed
+    as handled at the end of the event: their clocks move on but they are not said again, whatever
+    quiet_minutes is. Thread-safe: the early check and the end of the event call it from two threads."""
 
     def __init__(self, devices, messages, language="en", timeout=10, quiet_minutes=0, reminders=None,
                  remind_minutes=0):
@@ -259,6 +262,7 @@ class Announcer:
         self.remind = remind_minutes * 60
         self.seen = {}              # label: time.monotonic() of the last event that showed it
         self.said = {}              # label: when its message or reminder was last said
+        self.lock = threading.Lock()
         self.stats = {"announced": 0, "failed": 0}
         self.on_result = None       # callable(ok_speakers, failed_speakers) after each announcement, or None
 
@@ -271,32 +275,42 @@ class Announcer:
         """The sentence for an event's labels (a list like ['cat', 'animal']), or '' for none."""
         return self._join([t for label, t in self.messages.items() if label in labels])
 
-    def text_now(self, labels, now=None):
+    def text_now(self, labels, now=None, handled=()):
         """text_for, less the labels still within quiet_minutes of their last event (or their reminder,
-        when one is due). Records the event, so call it once per event."""
+        when one is due) and the handled ones. Records the event, so call it once per event (and once
+        more at its end after an early announcement, with handled)."""
         now = time.monotonic() if now is None else now
         texts = []
-        for label, text in self.messages.items():
-            if label not in labels:
-                continue
-            last = self.seen.get(label)
-            self.seen[label] = now
-            if not self.quiet or last is None or now - last >= self.quiet:
-                texts.append(text)
-            elif label in self.reminders and self.remind and now - self.said.get(label, now) >= self.remind:
-                texts.append(self.reminders[label])
-            else:
-                continue
-            self.said[label] = now
+        with self.lock:
+            for label, text in self.messages.items():
+                if label not in labels:
+                    continue
+                last = self.seen.get(label)
+                self.seen[label] = now
+                if label in handled:
+                    continue
+                if not self.quiet or last is None or now - last >= self.quiet:
+                    texts.append(text)
+                elif label in self.reminders and self.remind and now - self.said.get(label, now) >= self.remind:
+                    texts.append(self.reminders[label])
+                else:
+                    continue
+                self.said[label] = now
         return self._join(texts)
 
-    def announce(self, labels, name=""):
-        text = self.text_now(labels)
+    def announce(self, labels, name="", handled=()):
+        """Say the message for labels now (on its own thread). handled: labels this event already
+        announced early, not said again."""
+        text = self.text_now(labels, handled=handled)
+        early = [l for l in self.messages if l in labels and l in handled]
+        if early:
+            log.info("google home: %s: %s already announced early", name, ", ".join(early))
+        rest = [l for l in labels if l not in handled]
         if text and self.devices:
             threading.Thread(target=self._say, args=(text, name), name="google_home", daemon=True).start()
-        elif self.text_for(labels):
+        elif self.text_for(rest):
             log.info("google home: %s: quiet, %s seen less than %.0f min ago", name,
-                     ", ".join(l for l in self.messages if l in labels), self.quiet / 60)
+                     ", ".join(l for l in self.messages if l in rest), self.quiet / 60)
         return text
 
     def _say(self, text, name):

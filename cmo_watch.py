@@ -28,6 +28,9 @@ Pipeline (one ffmpeg process, three threads, one cmo_ollama check per motion eve
              call_ollama_movie.bash is asked about it (classifier.cmo_ollama_dir, ~/dev/cmo_ollama). On a
              match the Google Home speakers are told at once (google_home.*), and the event folder is
              written to events_dir; events with nothing in them are deleted (unless save_rejects).
+  early      (google_home.early) while an event runs, the best moving frame of about every second is
+             asked about on its own, and a label with a Google Home message is announced as soon as
+             enough of those checks agree; the end-of-event classification then doesn't say it again.
   uploader   sends each event folder to every cmo_server in upload.servers (see cmo_upload.py), then the
              Telegram alert (telegram.*), and keeps the folder on disk until all of that is done.
 
@@ -141,6 +144,21 @@ DEFAULTS = {
         # said instead, every remind_minutes, while a label keeps showing up; empty = no reminder
         "reminder": {"raccoon": "", "cat": "", "dog": "", "person": "", "legs": "", "animal": ""},
         "remind_minutes": 15.0,
+        # announce while the event is still running: about every interval_seconds the best new moving
+        # frame is classified on its own (cmo_ollama's classify_images). Counting starts at a label's first
+        # positive check; it is announced once at least min_checks checks are in and announce of them were
+        # positive, and given up when fewer than keep were. Only labels with a message are checked. What
+        # this doesn't announce, the end-of-event classification still does.
+        "early": {
+            "enabled": False,
+            "interval_seconds": 1.0,
+            "keep": 0.4,
+            "announce": 0.75,
+            "min_checks": 4,
+            "max_checks": 8,             # checks per event at most
+            "no_positive_checks": 3,     # stop after this many checks with none of the labels
+            "person_quit": True,         # stop when a check sees a person and no animal (before any label)
+        },
     },
     "health": {
         # a Telegram message when Ollama, the camera, a cmo_server or a disk is down, and when it is fixed
@@ -598,6 +616,7 @@ class Event:
         self.peak_motion = 0.0
         self.picker = picker
         self.deltas = []                # (wall time, motion score, moving) for every analysed frame
+        self.early = None               # EarlyState when google_home.early is on
 
 
 class Detector:
@@ -607,6 +626,7 @@ class Detector:
         self.m, self.e, self.cl = conf["motion"], conf["event"], conf["classifier"]
         self.size = size
         self.events = events
+        self.early = None               # the EarlyChecker, when google_home.early is on
         self.reset_stream()
 
     def reset_stream(self):
@@ -625,17 +645,24 @@ class Detector:
                 return
             ev = self.ev = Event(now - len(self.recent) / m["fps"],
                                  FramePicker(k=self.cl["max_frames"], min_gap=self.cl["min_gap"]))
+            if self.early:
+                ev.early = self.early.begin(ev.start)
             log.info("event: motion started (%.3f)", score)
         ev.deltas.append((now, score, moving))
         if moving:
             ev.frames += 1
             ev.peak_motion = max(ev.peak_motion, score)
-            ev.picker.add(frame_rank(score, rgb), now, rgb)
+            rank = frame_rank(score, rgb)
+            ev.picker.add(rank, now, rgb)
+            if ev.early:
+                ev.early.offer(rank, now, rgb)
             self.quiet_since = None
         elif self.quiet_since is None:
             self.quiet_since = now
         if (self.quiet_since and now - self.quiet_since >= e["post_roll"]) or now - ev.start >= e["max_event"]:
             ev.end = self.quiet_since or now
+            if ev.early:
+                ev.early.ended = True
             self.events.put(ev)
             self.ev, self.recent, self.quiet_since = None, [], None
 
@@ -643,8 +670,150 @@ class Detector:
         """ffmpeg stopped: still classify an event that was running, then start fresh."""
         if self.ev is not None:
             self.ev.end = time.time()
+            if self.ev.early:
+                self.ev.early.ended = True
             self.events.put(self.ev)
         self.reset_stream()
+
+
+# ---- early check -------------------------------------------------------------
+class EarlyState:
+    """One event's early checks: the best moving frame since the last check (from the detector) and the
+    votes for each label. The worker closes it when it takes the event, so the early check and the end
+    of the event never both announce a label."""
+
+    def __init__(self, start, first_check):
+        self.start = start
+        self.next_at = first_check      # wall time of the next check
+        self.lock = threading.Lock()
+        self.frame = None               # (rank, t, rgb): the best moving frame since the last check
+        self.ended = False              # the event has closed: no more frames
+        self.closed = False             # the worker has the event: no more checks or announcements
+        self.done = False               # no more checks needed
+        self.ok = 0                     # checks that got an answer
+        self.checks = []                # what each check saw, for the event's me_data.json
+        self.votes = {}                 # label: [checks since its first positive, positives]
+        self.decided = {}               # label: "yes" (announced, or kept quiet by quiet_minutes) or "no"
+
+    def offer(self, rank, t, rgb):
+        """From the detector: a moving frame, kept if it is the best since the last check."""
+        if self.done or self.closed:
+            return
+        with self.lock:
+            if self.frame is None or rank > self.frame[0]:
+                self.frame = (rank, t, rgb.copy())
+
+    def take(self):
+        with self.lock:
+            frame, self.frame = self.frame, None
+            return frame
+
+    def close(self):
+        """From the worker: stop, and return the labels already announced (or kept quiet)."""
+        with self.lock:
+            self.closed = True
+            return {l for l, v in self.decided.items() if v == "yes"}
+
+    def summary(self):
+        with self.lock:
+            return {"checks": list(self.checks), "announced": sorted(l for l, v in self.decided.items() if v == "yes")}
+
+
+class EarlyChecker(threading.Thread):
+    """Asks about the running events' newest best frames, one at a time, and announces a label with a
+    Google Home message once enough checks agree (google_home.early)."""
+
+    def __init__(self, conf, announcer, frame_path):
+        super().__init__(name="early", daemon=True)
+        self.c = conf["google_home"]["early"]
+        self.max_event = conf["event"]["max_event"]
+        self.model, self.question = conf["classifier"]["model"], conf["classifier"]["question"]
+        self.announcer = announcer
+        self.labels = [l for l in announcer.messages if l in call_ollama.LABELS]
+        self.path = Path(frame_path)
+        self.lock = threading.Lock()
+        self.active = []
+        self.stats = {"events": 0, "checks": 0, "failed": 0, "announced": 0}
+
+    def begin(self, start):
+        """From the detector, when an event opens."""
+        st = EarlyState(start, start + self.c["interval_seconds"])
+        with self.lock:
+            self.active.append(st)
+        self.stats["events"] += 1
+        return st
+
+    def run(self):
+        while not STOP.is_set():
+            now = time.time()
+            with self.lock:
+                self.active = [st for st in self.active if not (st.done or st.closed)]
+                due = [st for st in self.active if st.ended or now >= st.next_at]
+            checked = False
+            for st in due:
+                checked = self.check(st) or checked
+            if not checked:
+                STOP.wait(0.2)
+
+    def check(self, st):
+        """One check of st's best frame since the last one. Returns whether Ollama was asked."""
+        frame = st.take()
+        if frame is None:
+            # no moving frame since the last check: wait for one, unless the event is over
+            if st.ended or time.time() - st.start > self.max_event + 60:
+                st.done = True
+            return False
+        st.next_at = time.time() + self.c["interval_seconds"]
+        _, t, rgb = frame
+        self.path.write_bytes(to_jpeg(rgb, 90))
+        t0 = time.monotonic()
+        labels = call_ollama.classify_images([self.path], self.model, self.question, timeout=30)
+        secs = time.monotonic() - t0
+        self.stats["checks"] += 1
+        name = "early " + datetime.fromtimestamp(st.start).strftime("%H:%M:%S")
+        with st.lock:           # the worker's close() waits for this, so it sees what was announced
+            if st.closed:
+                return True
+            hits = [k for k, v in (labels or {}).items() if v]
+            st.checks.append({"at": round(time.time() - st.start, 1), "frame": round(t - st.start, 1),
+                              "labels": hits if labels is not None else None, "seconds": round(secs, 1)})
+            n = len(st.checks)
+            if labels is None:
+                self.stats["failed"] += 1
+                log.warning("%s: check %d: cmo_ollama failed (%.1fs)", name, n, secs)
+            else:
+                st.ok += 1
+                announce = []
+                for label in self.labels:
+                    if label in st.decided or (label not in st.votes and not labels.get(label)):
+                        continue
+                    v = st.votes.setdefault(label, [0, 0])
+                    v[0] += 1
+                    v[1] += bool(labels.get(label))
+                    share = v[1] / v[0]
+                    if v[0] >= self.c["min_checks"] and share >= self.c["announce"]:
+                        st.decided[label] = "yes"
+                        announce.append(label)
+                    elif share < self.c["keep"]:
+                        st.decided[label] = "no"
+                log.info("%s: check %d (%.1fs in, %.1fs): %s%s", name, n, time.time() - st.start, secs,
+                         ",".join(hits) or "nothing",
+                         "".join("; {} {}/{}{}".format(l, v[1], v[0], " " + st.decided[l] if l in st.decided else "")
+                                 for l, v in st.votes.items()))
+                if announce:
+                    self.stats["announced"] += 1
+                    self.announcer.announce(announce, name)
+                started = list(st.votes)
+                if started and all(l in st.decided for l in started):
+                    st.done = True
+                elif not started and labels.get("person") and not labels.get("animal") and self.c["person_quit"]:
+                    st.done = True
+                    log.info("%s: only a person, stopping", name)
+                elif not started and st.ok >= self.c["no_positive_checks"]:
+                    st.done = True
+            if n >= self.c["max_checks"]:
+                st.done = True
+        return True
 
 
 # ---- classifier + event writer ---------------------------------------------
@@ -678,6 +847,25 @@ def google_home_announcer(conf):
                  "".join("; {} reminder every {:.0f} min: {!r}".format(k, gh["remind_minutes"], v)
                          for k, v in announcer.reminders.items()) if announcer.remind else "")
     return announcer
+
+
+def early_checker(conf, announcer):
+    """The early check (EarlyChecker) when google_home.early.enabled, else None."""
+    c = conf["google_home"]["early"]
+    if not c["enabled"]:
+        return None
+    if not announcer:
+        log.warning("google home: early.enabled but google_home is off, no early check")
+        return None
+    checker = EarlyChecker(conf, announcer, Path(conf["events_dir"]).parent / "early_frame.jpg")
+    if not checker.labels:
+        log.warning("google home: early.enabled but no label has a message, no early check")
+        return None
+    log.info("google home: early check for %s every %.1fs: announce at %.0f%% of at least %d checks, give up "
+             "below %.0f%%, at most %d checks, stop after %d with none%s", ", ".join(checker.labels),
+             c["interval_seconds"], c["announce"] * 100, c["min_checks"], c["keep"] * 100, c["max_checks"],
+             c["no_positive_checks"], " or a person only" if c["person_quit"] else "")
+    return checker
 
 
 def telegram_notifier(conf):
@@ -801,6 +989,8 @@ class Worker(threading.Thread):
     def handle(self, ev):
         self.stats["events"] += 1
         if ev.frames < self.conf["motion"]["min_event_frames"]:
+            if ev.early:
+                ev.early.close()
             self.stats["skipped_short"] += 1
             self.record(ev, "short")
             log.info("event: %s %.1fs, %d moving frames: too short, ignored",
@@ -824,6 +1014,9 @@ class Worker(threading.Thread):
                 self.pending.remove(ev)
 
     def process(self, ev):
+        # from here on only this end-of-event result announces; labels the early check announced aren't
+        # said again
+        early = ev.early.close() if ev.early else set()
         self.counter += 1
         start = datetime.fromtimestamp(ev.start)
         dur = ev.end - ev.start
@@ -878,7 +1071,7 @@ class Worker(threading.Thread):
         if not labels.get("error"):
             self.record(ev, "match", seconds=secs, calls=movie_calls, labels=hits)
         if self.announcer:
-            self.announcer.announce(hits, name)     # on its own thread, right away (not after the upload)
+            self.announcer.announce(hits, name, handled=early)  # on its own thread, right away (not after the upload)
         best, calls = 0, 0
         if cands and hits and self.cl["rep_frame_llm"]:
             jpgs = []
@@ -944,6 +1137,8 @@ class Worker(threading.Thread):
                           "labels": [k for k, v in labels.items() if v and k != "error"],
                           "model": self.cl["model"], "llm": llm},
         }
+        if ev.early:
+            me_data["cmo_watch"]["early"] = ev.early.summary()
         (tmp / "me_data.json").write_text(json.dumps(me_data, indent=2))
         final = self.out / name
         tmp.rename(final)
@@ -1031,6 +1226,8 @@ def main(argv=None):
     announcer = google_home_announcer(conf)
     if announcer:
         announcer.on_result = lambda ok, failed: history.record("announce", ok=ok, failed=failed)
+    early = early_checker(conf, announcer)
+    detector.early = early
     worker = Worker(conf, events, camera, uploader, announcer, history)
     server_urls = [x["url"] for x in servers if x.get("active", True)]
     health = health_monitor(conf, camera, worker, server_urls, notifier, history)
@@ -1040,7 +1237,7 @@ def main(argv=None):
     if reporter:
         # SIGUSR1: send a report for the last 24 hours now (systemctl kill --kill-who=main -s USR1 <service>)
         signal.signal(signal.SIGUSR1, lambda *_: reporter.request())
-    for t in [camera, worker] + [x for x in (uploader, health, reporter) if x]:
+    for t in [camera, worker] + [x for x in (early, uploader, health, reporter) if x]:
         t.start()
     log.info("cmo_watch: %s", code())
     log.info("cmo_watch: %s watching %s (%s) at %dx%d, motion at %dx%d %s fps", conf["me_group"], camera.name(),
@@ -1053,8 +1250,8 @@ def main(argv=None):
                 break
             if time.monotonic() - last_report > 600:
                 last_report = time.monotonic()
-                log.info("stats: %s camera=%s upload=%s (%s)", worker.stats, camera.stats,
-                         uploader.stats if uploader else None, code())
+                log.info("stats: %s camera=%s upload=%s%s (%s)", worker.stats, camera.stats,
+                         uploader.stats if uploader else None, " early={}".format(early.stats) if early else "", code())
     except KeyboardInterrupt:
         pass
     log.info("stopping...")
