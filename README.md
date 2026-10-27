@@ -58,14 +58,16 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   the best new moving frame of about every second goes to cmo_ollama's `classify_images()` on its own
   (one small Ollama call, about 1.5 s). Only labels with a message are counted (cat and raccoon). From a
   label's first positive check, it is announced once `min_checks` (4) checks are in and `announce` (75%) of
-  them were positive, and given up below `keep` (40%). The checks stop after `max_checks` (8), after
+  them were positive, and given up below `keep` (40%). A short event that ends before that is announced
+  when it ends if at least `end_min_checks` (2) checks were in and `end_announce` (66%) were positive (cat 2
+  of 3, say), still well before the movie check. The checks stop after `max_checks` (8), after
   `no_positive_checks` (3) with neither label, or at a check that sees only a person. An early announcement
   goes through the same quiet and reminder clocks and counts as the event's announcement: the end-of-event
   result doesn't say that label again, whatever `quiet_minutes` is. What the early check doesn't settle is
   announced after the event as before. Each check is logged (`early HH:MM:SS: check 3 ...`) and saved in the
   event's `me_data.json` (`cmo_watch.early`). On cmo_ollama's labeled pet door clips it announced 46 of 79
   cats and raccoons about 5 s after they appeared (instead of 10-15 s after they left), with no false
-  announcements, at about 3.5 extra Ollama calls per event.
+  announcements, at about 3.5 extra Ollama calls per event; the end-of-event rule adds 7 more, still none false.
 - **Uploading** (`cmo_upload.py`): each event goes to every server in `upload.servers` (empty: the
   `cmo_server` in cmo_ollama's `ollama_common.bash`, shared by every camera): `me_ollama.json`, the movie,
   the picture, and `me_data.json` last, so a half-uploaded event never shows up. A failed upload is retried

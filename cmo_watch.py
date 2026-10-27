@@ -147,14 +147,18 @@ DEFAULTS = {
         # announce while the event is still running: about every interval_seconds the best new moving
         # frame is classified on its own (cmo_ollama's classify_images). Counting starts at a label's first
         # positive check; it is announced once at least min_checks checks are in and announce of them were
-        # positive, and given up when fewer than keep were. Only labels with a message are checked. What
-        # this doesn't announce, the end-of-event classification still does.
+        # positive, and given up when fewer than keep were. An event that ends before a label has
+        # min_checks checks is announced when it ends if at least end_min_checks of them were in and
+        # end_announce were positive. Only labels with a message are checked. What this doesn't announce,
+        # the end-of-event classification still does.
         "early": {
             "enabled": False,
             "interval_seconds": 1.0,
             "keep": 0.4,
             "announce": 0.75,
             "min_checks": 4,
+            "end_min_checks": 2,         # for an event that ends sooner (0 = never)
+            "end_announce": 0.66,
             "max_checks": 8,             # checks per event at most
             "no_positive_checks": 3,     # stop after this many checks with none of the labels
             "person_quit": True,         # stop when a check sees a person and no animal (before any label)
@@ -760,6 +764,8 @@ class EarlyChecker(threading.Thread):
         frame = st.take()
         if frame is None:
             # no moving frame since the last check: wait for one, unless the event is over
+            if st.ended:
+                self.at_end(st)
             if st.ended or time.time() - st.start > self.max_event + 60:
                 st.done = True
             return False
@@ -815,6 +821,26 @@ class EarlyChecker(threading.Thread):
                 st.done = True
         return True
 
+    def at_end(self, st):
+        """The event has ended: announce a label that had too few checks for min_checks but enough for
+        end_min_checks, with at least end_announce of them positive."""
+        if not self.c["end_min_checks"]:
+            return
+        with st.lock:
+            if st.closed:
+                return
+            announce = [l for l, v in st.votes.items() if l not in st.decided and v[0] < self.c["min_checks"]
+                        and v[0] >= self.c["end_min_checks"] and v[1] / v[0] >= self.c["end_announce"]]
+            if not announce:
+                return
+            name = "early " + datetime.fromtimestamp(st.start).strftime("%H:%M:%S")
+            for l in announce:
+                st.decided[l] = "yes"
+            log.info("%s: event ended (%.1fs in): %s", name, time.time() - st.start,
+                     ", ".join("{} {}/{} yes".format(l, st.votes[l][1], st.votes[l][0]) for l in announce))
+            self.stats["announced"] += 1
+            self.announcer.announce(announce, name)
+
 
 # ---- classifier + event writer ---------------------------------------------
 def upload_servers(conf):
@@ -862,9 +888,11 @@ def early_checker(conf, announcer):
         log.warning("google home: early.enabled but no label has a message, no early check")
         return None
     log.info("google home: early check for %s every %.1fs: announce at %.0f%% of at least %d checks, give up "
-             "below %.0f%%, at most %d checks, stop after %d with none%s", ", ".join(checker.labels),
+             "below %.0f%%, at most %d checks, stop after %d with none%s%s", ", ".join(checker.labels),
              c["interval_seconds"], c["announce"] * 100, c["min_checks"], c["keep"] * 100, c["max_checks"],
-             c["no_positive_checks"], " or a person only" if c["person_quit"] else "")
+             c["no_positive_checks"], " or a person only" if c["person_quit"] else "",
+             "; at the event's end %.0f%% of at least %d" % (c["end_announce"] * 100, c["end_min_checks"])
+             if c["end_min_checks"] else "")
     return checker
 
 
