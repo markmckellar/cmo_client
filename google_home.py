@@ -249,7 +249,10 @@ class Announcer:
     up within quiet_minutes ("The cat is still at the door"); a label with no text gets no reminder.
     An event's labels that its early check already announced (cmo_watch's google_home.early) are passed
     as handled at the end of the event: their clocks move on but they are not said again, whatever
-    quiet_minutes is. Thread-safe: the early check and the end of the event call it from two threads."""
+    quiet_minutes is. Thread-safe: the early check and the end of the event call it from two threads.
+    announce's extra: a callable that returns a sentence to add after the message (cmo_watch's
+    google_home.cute: a cute sentence about the picture), or None; it is called on the announcement's
+    thread, and only when there is something to say."""
 
     def __init__(self, devices, messages, language="en", timeout=10, quiet_minutes=0, reminders=None,
                  remind_minutes=0):
@@ -298,22 +301,32 @@ class Announcer:
                 self.said[label] = now
         return self._join(texts)
 
-    def announce(self, labels, name="", handled=()):
+    def announce(self, labels, name="", handled=(), extra=None):
         """Say the message for labels now (on its own thread). handled: labels this event already
-        announced early, not said again."""
+        announced early, not said again. extra: see the class."""
         text = self.text_now(labels, handled=handled)
         early = [l for l in self.messages if l in labels and l in handled]
         if early:
             log.info("google home: %s: %s already announced early", name, ", ".join(early))
         rest = [l for l in labels if l not in handled]
         if text and self.devices:
-            threading.Thread(target=self._say, args=(text, name), name="google_home", daemon=True).start()
+            threading.Thread(target=self._say, args=(text, name, extra), name="google_home", daemon=True).start()
         elif self.text_for(rest):
             log.info("google home: %s: quiet, %s seen less than %.0f min ago", name,
                      ", ".join(l for l in self.messages if l in rest), self.quiet / 60)
         return text
 
-    def _say(self, text, name):
+    def _say(self, text, name, extra=None):
+        if extra:
+            try:
+                more = (extra() or "").strip()
+            except Exception as e:
+                log.warning("google home: %s: no extra sentence: %s", name, e)
+                more = ""
+            if more and len(text) + 1 + len(more) <= TTS_MAX_CHARS:
+                text = self._join([text, more])
+            elif more:
+                log.info("google home: %s: extra sentence left out, too long for one message: %r", name, more)
         try:
             results = say(self.devices, text, self.language, self.timeout)
         except Exception as e:

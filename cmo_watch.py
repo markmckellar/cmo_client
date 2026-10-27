@@ -151,6 +151,11 @@ DEFAULTS = {
         # min_checks checks is announced when it ends if at least end_min_checks of them were in and
         # end_announce were positive. Only labels with a message are checked. What this doesn't announce,
         # the end-of-event classification still does.
+        # add a short, cute sentence about the event's picture after the message (cmo_ollama's
+        # cute_ollama.bash, about 1.5 s more before it is said); left out if it fails or takes longer
+        # than cute_seconds
+        "cute": False,
+        "cute_seconds": 8.0,
         "early": {
             "enabled": False,
             "interval_seconds": 1.0,
@@ -698,6 +703,7 @@ class EarlyState:
         self.checks = []                # what each check saw, for the event's me_data.json
         self.votes = {}                 # label: [checks since its first positive, positives]
         self.decided = {}               # label: "yes" (announced, or kept quiet by quiet_minutes) or "no"
+        self.positive = None            # the picture of the last check that saw a label (for google_home.cute)
 
     def offer(self, rank, t, rgb):
         """From the detector: a moving frame, kept if it is the best since the last check."""
@@ -727,8 +733,9 @@ class EarlyChecker(threading.Thread):
     """Asks about the running events' newest best frames, one at a time, and announces a label with a
     Google Home message once enough checks agree (google_home.early)."""
 
-    def __init__(self, conf, announcer, frame_path):
+    def __init__(self, conf, announcer, frame_path, cute=None):
         super().__init__(name="early", daemon=True)
+        self.cute = cute                # cute_sentence(rgb) when google_home.cute, else None
         self.c = conf["google_home"]["early"]
         self.max_event = conf["event"]["max_event"]
         self.model, self.question = conf["classifier"]["model"], conf["classifier"]["question"]
@@ -796,6 +803,8 @@ class EarlyChecker(threading.Thread):
                     v = st.votes.setdefault(label, [0, 0])
                     v[0] += 1
                     v[1] += bool(labels.get(label))
+                    if labels.get(label):
+                        st.positive = rgb
                     share = v[1] / v[0]
                     if v[0] >= self.c["min_checks"] and share >= self.c["announce"]:
                         st.decided[label] = "yes"
@@ -808,7 +817,7 @@ class EarlyChecker(threading.Thread):
                                  for l, v in st.votes.items()))
                 if announce:
                     self.stats["announced"] += 1
-                    self.announcer.announce(announce, name)
+                    self.announcer.announce(announce, name, extra=self.extra(st.positive))
                 started = list(st.votes)
                 if started and all(l in st.decided for l in started):
                     st.done = True
@@ -839,7 +848,11 @@ class EarlyChecker(threading.Thread):
             log.info("%s: event ended (%.1fs in): %s", name, time.time() - st.start,
                      ", ".join("{} {}/{} yes".format(l, st.votes[l][1], st.votes[l][0]) for l in announce))
             self.stats["announced"] += 1
-            self.announcer.announce(announce, name)
+            self.announcer.announce(announce, name, extra=self.extra(st.positive))
+
+    def extra(self, rgb):
+        """The announcement's extra sentence (google_home.cute) about rgb, or None."""
+        return None if self.cute is None or rgb is None else lambda: self.cute(rgb)
 
 
 # ---- classifier + event writer ---------------------------------------------
@@ -875,6 +888,32 @@ def google_home_announcer(conf):
     return announcer
 
 
+def cute_sentences(conf):
+    """When google_home.cute: a function rgb -> a short, cute sentence about the picture (cmo_ollama's
+    cute_text), or None when it fails. Else None."""
+    gh = conf["google_home"]
+    if not (gh["enabled"] and gh["cute"]):
+        return None
+    if not hasattr(call_ollama, "cute_text"):
+        log.warning("google home: google_home.cute is on but this cmo_ollama has no cute_text (git pull it), "
+                    "announcing without it")
+        return None
+    model = conf["classifier"]["model"]
+
+    def cute(rgb):
+        fd, path = tempfile.mkstemp(prefix="cute_", suffix=".jpg")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(to_jpeg(rgb, 90))
+            t0 = time.monotonic()
+            text = call_ollama.cute_text(path, model, timeout=gh["cute_seconds"])
+            log.info("google home: cute sentence (%.1fs): %r", time.monotonic() - t0, text)
+            return text
+        finally:
+            os.unlink(path)
+    return cute
+
+
 def early_checker(conf, announcer):
     """The early check (EarlyChecker) when google_home.early.enabled, else None."""
     c = conf["google_home"]["early"]
@@ -883,7 +922,8 @@ def early_checker(conf, announcer):
     if not announcer:
         log.warning("google home: early.enabled but google_home is off, no early check")
         return None
-    checker = EarlyChecker(conf, announcer, Path(conf["events_dir"]).parent / "early_frame.jpg")
+    checker = EarlyChecker(conf, announcer, Path(conf["events_dir"]).parent / "early_frame.jpg",
+                           cute_sentences(conf))
     if not checker.labels:
         log.warning("google home: early.enabled but no label has a message, no early check")
         return None
@@ -985,6 +1025,7 @@ class Worker(threading.Thread):
         super().__init__(name="worker", daemon=True)
         self.history = history      # daily.History: every event's result, for the daily report
         self.announcer = announcer
+        self.cute = cute_sentences(conf) if announcer else None     # google_home.cute
         self.conf = conf
         self.e, self.cl = conf["event"], conf["classifier"]
         self.events, self.cam, self.uploader = events, camera, uploader
@@ -1099,7 +1140,9 @@ class Worker(threading.Thread):
         if not labels.get("error"):
             self.record(ev, "match", seconds=secs, calls=movie_calls, labels=hits)
         if self.announcer:
-            self.announcer.announce(hits, name, handled=early)  # on its own thread, right away (not after the upload)
+            # on its own thread, right away (not after the upload)
+            self.announcer.announce(hits, name, handled=early,
+                                    extra=(lambda rgb=cands[0].rgb: self.cute(rgb)) if self.cute and cands else None)
         best, calls = 0, 0
         if cands and hits and self.cl["rep_frame_llm"]:
             jpgs = []

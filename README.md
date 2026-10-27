@@ -11,7 +11,7 @@ each camera's settings file:
 | Video (`camera.type`) | `rpicam`: rpicam-vid, the Pi's H.264 encoder, 1296x972 | `rtsp`: the Jarnex camera's 640x360 H.264 sub stream, with audio |
 | Name on cmo_server (`me_group`) | `pet_door` | `porch_cam` |
 | Telegram bot (`telegram.config`) | that machine's telegram-send config: @DeCatsBot | that machine's: the porch bot |
-| Google Home (`google_home.*`) | cat and raccoon messages on 3 speakers, early announcements on | off |
+| Google Home (`google_home.*`) | cat and raccoon messages on 3 speakers, early announcements and cute sentences on | off |
 | Motion | 1% of the picture, no masks | 0.4%, the camera's clock masked out |
 | After upload | event deleted | kept 30 days in `local/porch_cam/events/` |
 | Log | `~/logs/pet_watch.log` | `~/logs/porch_watch.log` |
@@ -54,6 +54,13 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   once, not after every event; each label has its own clock, so a raccoon still gets through. While the
   cat stays, `google_home.reminder.cat` ("The cat is still at the door") is said every
   `google_home.remind_minutes` (15). Telegram still gets every event.
+- **Cute sentence** (`google_home.cute`, on for the pet door): after the message, one short sentence about
+  the event's picture from cmo_ollama's `cute_ollama.bash`, e.g. "There is a cat at the door. A tabby cat
+  is sitting by the door, looking in." The picture is the last early check that saw the label, or the
+  best moving frame at the end of the event. It costs one more Ollama call (about 1.5 s before the
+  message is said) and only when something is said, not while a label is kept quiet. If the call fails,
+  takes longer than `cute_seconds` (8), or would make the message longer than 200 characters, the plain
+  message is said.
 - **Early announcements** (`google_home.early.*`, on for the pet door): while an event is still running,
   the best new moving frame of about every second goes to cmo_ollama's `classify_images()` on its own
   (one small Ollama call, about 1.5 s). Only labels with a message are counted (cat and raccoon). From a
