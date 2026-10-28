@@ -411,7 +411,8 @@ class Camera(threading.Thread):
         self.size = analysis_size(w, h, self.m["analysis_width"])
         self.proc = None
         self.rpicam = None          # rpicam-vid, feeding ffmpeg (camera.type rpicam)
-        self.last_frame = time.monotonic()
+        self.last_frame = time.monotonic()  # the last video frame (health's camera check)
+        self.started = time.monotonic()     # when ffmpeg was last started (the watchdog's grace)
         self.eof = threading.Event()      # file source ended (or the camera thread stopped)
         self.stats = {"restarts": 0, "stalls": 0}
         self.history = None         # daily.History, for the daily report
@@ -489,7 +490,8 @@ class Camera(threading.Thread):
                                              stdout=subprocess.PIPE, stderr=errf, bufsize=0)
                 if self.rpicam:
                     self.rpicam.stdout.close()      # ffmpeg holds it now; rpicam-vid gets SIGPIPE if ffmpeg dies
-                self.last_frame = time.monotonic()
+                # not last_frame: a camera that refuses every restart must still show up as down
+                self.started = time.monotonic()
                 watchdog = threading.Thread(target=self.watch, args=(self.proc,), name="watchdog", daemon=True)
                 watchdog.start()
                 self.read_frames(self.proc)
@@ -535,7 +537,7 @@ class Camera(threading.Thread):
             segs = self.segments()
             if segs and segs[-1][1] != newest:
                 newest, newest_at = segs[-1][1], time.monotonic()
-            quiet = max(time.monotonic() - newest_at, time.monotonic() - self.last_frame)
+            quiet = max(time.monotonic() - newest_at, time.monotonic() - max(self.last_frame, self.started))
             if stall and not self.source and quiet > stall:
                 self.stats["stalls"] += 1
                 self.stalled = True
