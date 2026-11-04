@@ -19,7 +19,9 @@ every server, so its movie link works, and before the folder is deleted. A ".tel
 it from being sent twice; if Telegram can't be reached it is tried again every retry_seconds, up to
 ALERT_TRIES times, and then given up (".telegram_failed") so the event is still cleaned up.
 """
+import ipaddress
 import logging
+import os
 import re
 import shutil
 import threading
@@ -34,6 +36,41 @@ UPLOAD_ORDER = ("me_ollama.json", "me_movie.mp4", "me_rep_image.jpg", "me_data.j
 ALERT_TRIES = 5
 
 
+def read_device_key(path):
+    """This camera's device key for cmo_server: CMO_KEY=... from the file (mode 600, never in git), else the
+    CMO_KEY environment variable, else None. A server in open mode (at home) ignores it; one in google mode
+    (in the cloud) needs it to accept uploads."""
+    if path and Path(path).exists():
+        for line in Path(path).read_text().splitlines():
+            m = re.match(r"\s*(?:export\s+)?CMO_KEY\s*=\s*(.*?)\s*$", line)
+            if m:
+                value = m.group(1)
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                    value = value[1:-1]
+                if value:
+                    return value
+    return os.environ.get("CMO_KEY") or None
+
+
+def auth_headers(url, key):
+    """The Authorization header for this server, if there is a key and it is safe to send there: only over
+    HTTPS, or to this machine or the home network (where a plain-http server is in open mode anyway)."""
+    if not key:
+        return {}
+    m = re.match(r"^(\w+)://(\[[^\]]+\]|[^:/]+)", url)
+    if not m:
+        return {}
+    scheme, host = m.group(1).lower(), m.group(2).strip("[]")
+    if scheme == "https":
+        return {"Authorization": "Bearer " + key}
+    try:
+        ip = ipaddress.ip_address(host)
+        safe = ip.is_private or ip.is_loopback
+    except ValueError:
+        safe = host == "localhost"
+    return {"Authorization": "Bearer " + key} if safe else {}
+
+
 def server_tag(url):
     """'http://173.255.215.223:9090/' -> '173.255.215.223_9090', for the .sent_ marker file name."""
     return re.sub(r"[^A-Za-z0-9.]+", "_", re.sub(r"^\w+://", "", url)).strip("_")
@@ -43,7 +80,7 @@ class CmoUploader(threading.Thread):
     """Scans the events dir every few seconds and uploads what isn't on every server yet."""
 
     def __init__(self, events_dir, me_group, servers, retry_seconds=60, delete_after_upload=True,
-                 keep_days=3, timeout=120, stop=None, notifier=None):
+                 keep_days=3, timeout=120, stop=None, notifier=None, key=None):
         super().__init__(name="uploader", daemon=True)
         self.dir = Path(events_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -58,6 +95,7 @@ class CmoUploader(threading.Thread):
         self.next_try = {}          # (event dir, server) -> monotonic time of the next attempt after a failure
         self.session = requests.Session()
         self.notifier = notifier
+        self.key = key
         self.alert_fails = {}       # event name -> failed Telegram tries
         self.stats = {"sent": 0, "failed": 0}
 
@@ -128,7 +166,8 @@ class CmoUploader(threading.Thread):
                     continue
                 raise FileNotFoundError(str(path))
             with open(str(path), "rb") as f:
-                r = self.session.post(url, data={"image_dir": ""}, files={"file": (fname, f)}, timeout=self.timeout)
+                r = self.session.post(url, data={"image_dir": ""}, files={"file": (fname, f)}, timeout=self.timeout,
+                                      headers=auth_headers(server, self.key))
             r.raise_for_status()
 
     def alerted(self, d):

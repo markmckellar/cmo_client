@@ -59,7 +59,7 @@ from pathlib import Path
 import numpy as np
 
 import version
-from cmo_upload import CmoUploader
+from cmo_upload import CmoUploader, read_device_key
 from vision import FramePicker, MotionScorer, frame_rank, make_grid, to_jpeg
 
 log = logging.getLogger("cmo")
@@ -121,6 +121,10 @@ DEFAULTS = {
     "upload": {
         # empty = the cmo_server set in cmo_ollama's ollama_common.bash, so every camera uses the same one
         "servers": [],
+        # this camera's device key for cmo_server (CMO_KEY=... in a mode-600 file, never in git; see
+        # cmo_server's new_device_key.bash). Sent only over https or to the home network. No file: no key,
+        # which a server at home (open mode) doesn't need and a cloud server refuses.
+        "key_file": "~/.config/cmo/device_key",
         "retry_seconds": 60,
         "delete_after_upload": True,
         "keep_days": 3,
@@ -306,6 +310,8 @@ def load_config(path):
         conf["log_file"] = str(base / os.path.expanduser(conf["log_file"]))
     if conf["camera"]["credentials_file"]:
         conf["camera"]["credentials_file"] = os.path.expanduser(conf["camera"]["credentials_file"])
+    if conf["upload"]["key_file"]:
+        conf["upload"]["key_file"] = os.path.expanduser(conf["upload"]["key_file"])
     return conf
 
 
@@ -977,6 +983,7 @@ def server_free_bytes(servers):
         return None
     import requests
     try:
+        # /catcam/health is public: no device key needed
         return requests.get(servers[0].rstrip("/") + "/catcam/health", timeout=20).json().get("free_bytes")
     except Exception:
         return None
@@ -1283,10 +1290,13 @@ def main(argv=None):
     if not a.no_upload:
         u = conf["upload"]
         servers = upload_servers(conf)
-        log.info("uploading to %s", ", ".join(s["url"] for s in servers))
+        key = read_device_key(u["key_file"])
+        log.info("uploading to %s (%s)", ", ".join(s["url"] for s in servers),
+                 "device key from " + (u["key_file"] if u["key_file"] and Path(u["key_file"]).exists() else "CMO_KEY")
+                 if key else "no device key")
         notifier = telegram_notifier(conf)
         uploader = CmoUploader(conf["events_dir"], conf["me_group"], servers, u["retry_seconds"],
-                               u["delete_after_upload"], u["keep_days"], stop=STOP, notifier=notifier)
+                               u["delete_after_upload"], u["keep_days"], stop=STOP, notifier=notifier, key=key)
     events = queue.Queue()
     worker = None
     detector = Detector(conf, (0, 0), events)

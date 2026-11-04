@@ -152,6 +152,7 @@ unknown key stops cmo_watch with an error. Paths are relative to the file and ma
 | `camera.url`, `.credentials_file`, `.audio` | rtsp: the URL **without** the login, the file holding it, and whether to record the audio |
 | `camera.width`, `.height`, `.fps` | the video's size (v4l2: asked of the camera; rtsp: the stream's size) |
 | `upload.servers` | comma separated URLs; empty = the shared `cmo_server` |
+| `upload.key_file` | this camera's device key for cmo_server, a `CMO_KEY=...` line in a mode-600 file (default `~/.config/cmo/device_key`; or the `CMO_KEY` environment variable). Never in git. Sent only over https or to the home network. A server at home (open mode) ignores it; the cloud server needs it to accept uploads. Make one with cmo_server's `new_device_key.bash`. |
 | `motion.masks` | `x0,y0,x1,y1` boxes (0-1 of the picture) to ignore, separated by `;` |
 | `camera.input_options` | extra ffmpeg options, as on a command line |
 | `camera.source` | a movie file to play instead of the camera (testing) |
