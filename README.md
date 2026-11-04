@@ -1,5 +1,7 @@
 # cmo_client: the CMO camera watcher
 
+> Part of the [Private AI home camera system](https://github.com/markmckellar/cmo): this repo is the camera software. The other parts: [cmo_ollama](https://github.com/markmckellar/cmo_ollama) · [cmo_server](https://github.com/markmckellar/cmo_server) · [cmo_vue_client](https://github.com/markmckellar/cmo_vue_client).
+
 `cmo_watch.py` watches a camera and keeps the movies that show a person, legs, cat, dog, raccoon or
 other animal. It uploads them to cmo_server and sends the alerts: Telegram, and spoken messages on the
 Google Home speakers. It is one program for every CMO camera. What differs between the cameras is in
