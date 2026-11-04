@@ -205,7 +205,7 @@ class CastConnection:
 
 # ---- several speakers -------------------------------------------------------------
 def parse_devices(text):
-    """'bedroom=192.168.1.122, study=192.168.1.108' -> {'bedroom': '192.168.1.122', 'study': ...}.
+    """'bedroom=192.0.2.12, study=192.0.2.8' -> {'bedroom': '192.0.2.12', 'study': ...}.
     A bare address is named after itself."""
     devices = {}
     for item in text.split(","):

@@ -94,7 +94,7 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   is sent once it can be, as "was down from ... to ...". Everything is also logged (`health:` lines).
 
   ```
-  ⚠️ porch_cam (mckada): the camera is down since 05:50 (5 min): no video from rtsp://192.168.1.247/V_ENC_001 for 5 min
+  ⚠️ porch_cam (mckada): the camera is down since 05:50 (5 min): no video from rtsp://<camera>/V_ENC_001 for 5 min
   ✅ porch_cam (mckada): the camera is working again since 06:02 (down 12 min, from 05:50)
   ```
 
@@ -121,7 +121,7 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   Busiest hour: 09:00–10:00 (8 events)
   Google Home: 4 announcements, every speaker answered
 
-  ✅ Health: everything working (Ollama, the camera, cmo_server http://173.255.215.223:9090/, ...)
+  ✅ Health: everything working (Ollama, the camera, cmo_server https://cmoserver01.mckcode.com/, ...)
   Problems in the last 24 h: the camera down 1× (12 min)
   Camera reconnects: 2 (short dropouts, no alert)
   Waiting to upload: 0 · disk free here: 21.4 GB · on cmo_server: 32.3 GB
@@ -152,6 +152,7 @@ unknown key stops cmo_watch with an error. Paths are relative to the file and ma
 | `camera.url`, `.credentials_file`, `.audio` | rtsp: the URL **without** the login, the file holding it, and whether to record the audio |
 | `camera.width`, `.height`, `.fps` | the video's size (v4l2: asked of the camera; rtsp: the stream's size) |
 | `upload.servers` | comma separated URLs; empty = the shared `cmo_server` |
+| (any setting) | `<camera>.local.properties` next to the camera's file overrides it: this machine's own addresses (the camera's URL, the speakers, the home server in `upload.servers`). Not in git (`*.local.properties` is ignored). |
 | `upload.key_file` | this camera's device key for cmo_server, a `CMO_KEY=...` line in a mode-600 file (default `~/.config/cmo/device_key`; or the `CMO_KEY` environment variable). Never in git. Sent only over https or to the home network. A server at home (open mode) ignores it; the cloud server needs it to accept uploads. Make one with cmo_server's `new_device_key.bash`. |
 | `motion.masks` | `x0,y0,x1,y1` boxes (0-1 of the picture) to ignore, separated by `;` |
 | `camera.input_options` | extra ffmpeg options, as on a command line |
@@ -236,7 +237,7 @@ systemctl --user restart cmo_watch_porch_cam
 Each camera runs as a service, started at boot and restarted if it dies. Use these instead of running
 `cmo_watch.py` by hand: only one program at a time can use a camera's buffer (and the Pi camera).
 
-| | Pet door (on the Pi: `ssh mm@192.168.1.146`) | Porch (on mckada) |
+| | Pet door (on the Pi: `ssh picmopetdoor`) | Porch (on mckada) |
 |---|---|---|
 | Is it running? | `systemctl status cmo_watch_pet_door` | `systemctl --user status cmo_watch_porch_cam` |
 | Stop | `sudo systemctl stop cmo_watch_pet_door` | `systemctl --user stop cmo_watch_porch_cam` |

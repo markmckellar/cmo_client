@@ -72,7 +72,7 @@ def auth_headers(url, key):
 
 
 def server_tag(url):
-    """'http://173.255.215.223:9090/' -> '173.255.215.223_9090', for the .sent_ marker file name."""
+    """'https://cmoserver01.mckcode.com/' -> 'cmoserver01.mckcode.com', for the .sent_ marker file name."""
     return re.sub(r"[^A-Za-z0-9.]+", "_", re.sub(r"^\w+://", "", url)).strip("_")
 
 

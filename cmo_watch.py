@@ -263,13 +263,25 @@ def flatten(d, prefix=""):
             yield prefix + k, v
 
 
+def local_properties_path(path):
+    """pet_door.properties -> pet_door.local.properties next to it: this machine's own values (addresses of the
+    camera, speakers and servers), never in git. Its keys override the shared file's."""
+    path = Path(path)
+    return path.with_name(path.stem + ".local" + path.suffix)
+
+
 def load_config(path):
-    """DEFAULTS, overridden by the keys set in the properties file (camera.width = 1296, ...). Each value
-    is converted to the type of its default; an unknown key is an error, so a typo doesn't go unnoticed."""
+    """DEFAULTS, overridden by the keys set in the properties file (camera.width = 1296, ...), then by this
+    machine's <camera>.local.properties if there is one. Each value is converted to the type of its default;
+    an unknown key is an error, so a typo doesn't go unnoticed."""
     path = Path(path)
     conf = copy.deepcopy(DEFAULTS)
     defaults = dict(flatten(DEFAULTS))
-    for key, text in (read_properties(path) if path.exists() else {}).items():
+    props = read_properties(path) if path.exists() else {}
+    local = local_properties_path(path)
+    if local.exists():
+        props.update(read_properties(local))
+    for key, text in props.items():
         if key not in defaults:
             raise SystemExit("error: {}: unknown setting {!r}".format(path, key))
         default = defaults[key]
@@ -884,7 +896,8 @@ def google_home_announcer(conf):
     from google_home import Announcer, parse_devices
     devices = parse_devices(gh["devices"])
     if not devices:
-        raise SystemExit("error: google_home.enabled but google_home.devices is empty")
+        raise SystemExit("error: google_home.enabled but google_home.devices is empty (set it in this "
+                         "camera's .local.properties)")
     announcer = Announcer(devices, gh["message"], gh["language"], quiet_minutes=gh["quiet_minutes"],
                           reminders=gh["reminder"], remind_minutes=gh["remind_minutes"])
     log.info("google home: %s on %s", ", ".join("{} -> {!r}".format(k, v) for k, v in announcer.messages.items())

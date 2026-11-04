@@ -3,3 +3,5 @@ local/
 .venv/
 __pycache__/
 *.pyc
+# each machine's own values (camera, speaker and server addresses), see README
+*.local.properties
