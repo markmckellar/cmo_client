@@ -83,7 +83,7 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   every `retry_seconds`, also after a restart. A ".sent_<server>" marker keeps it from going twice.
 - **Telegram** (`telegram_notify.py`): once the event is on the server, its picture goes out with
   telegram-send, captioned in the format cmo_alerts used:
-  `2026-10-11 20:13:17-MDT visit-cmo-home OR watch-movie cat,animal` (links to the web client and the movie).
+  `2026-10-11 20:13:17-MDT visit-cmo-home OR watch-movie cat,animal` (links to the web client and to the event in it).
   A raccoon also gets `raccoon_alert_count` extra "RACCOON ALERT!!!" messages. Failed alerts are retried
   5 times.
 

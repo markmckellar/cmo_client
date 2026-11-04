@@ -2,7 +2,7 @@
 
 Each event is one message in the format cmo_alerts used to send from the server: the event's
 me_rep_image.jpg as a photo, with an HTML caption holding the time, a link to the web client, a link to
-the movie on the cmo_server, and what the model saw:
+the event in the web client, and what the model saw:
 
   2026-10-11 20:13:17-MDT <a>visit-cmo-home</a> OR <a>watch-movie</a> cat,animal
 
@@ -51,8 +51,8 @@ def caption(event_dir, me_group, server):
     when = start.strftime("%Y-%m-%d %H:%M:%S")
     zone = start.astimezone().strftime("%Z")
     home = server + "cmo_client/index.html"
-    movie = "{}cmo_client/movie.html?movie_path={}&time={}".format(
-        server, quote("/catcam/data/{}/{}/{}/me_movie.mp4".format(me_group, name[:8], name)), quote(when))
+    # the event in the web app: it plays the movie, shows and changes the labels, and signs in first if needed
+    movie = "{}cmo_client/index.html#/event/{}/{}/{}".format(server, quote(me_group), name[:8], quote(name))
     labels = observed(event_dir)
     return '{}-{} <a href="{}">visit-cmo-home</a> OR <a href="{}">watch-movie</a> {}'.format(
         when, zone, home, movie, ",".join(labels) or "unclassified")
