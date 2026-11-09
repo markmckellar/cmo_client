@@ -181,6 +181,7 @@ DEFAULTS = {
         "down_minutes": 5.0,             # how long a problem must last before the message
         "repeat_hours": 24.0,            # a reminder while it stays down; 0 = never
         "min_free_gb": 2.0,              # less free disk than this (here, or on a cmo_server) is a problem
+        "camera_fix": "",                # what to do when the camera is down, added to its messages
     },
     "report": {
         # a daily Telegram message with what was seen and the health (see daily.py)
@@ -980,7 +981,7 @@ def health_monitor(conf, camera, worker, servers, notifier, history=None):
     import health
     checks = [health.ollama_check(call_ollama.setting("api"), worker)]
     if not conf["camera"]["source"]:
-        checks.append(health.camera_check(camera, h["check_seconds"]))
+        checks.append(health.camera_check(camera, h["check_seconds"], h["camera_fix"]))
     for url in servers:
         checks += health.server_checks(url.rstrip("/") + "/", h["min_free_gb"])
     checks.append(health.disk_check(conf["events_dir"], h["min_free_gb"]))

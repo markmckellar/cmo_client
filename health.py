@@ -47,14 +47,20 @@ def clock(t):
     return d.strftime("%H:%M") if d.date() == datetime.now().date() else d.strftime("%b %d %H:%M")
 
 
+def fix_line(c):
+    """The check's fix as an extra line of the message, or ''."""
+    return "\n👉 {}".format(c.fix) if c.fix else ""
+
+
 UNKNOWN = object()      # a check that can't tell right now (keeps its state)
 
 
 class Check:
     """One thing to watch: fn() returns None when it is fine, what is wrong (text), or UNKNOWN."""
 
-    def __init__(self, name, what, fn):
+    def __init__(self, name, what, fn, fix=""):
         self.name, self.what, self.fn = name, what, fn
+        self.fix = fix              # what to do about it, added to the PROBLEM and reminder messages
         self.down_since = None      # wall time of the first failure in a row
         self.detail = ""            # what was wrong, the last time
         self.alerted = False        # the PROBLEM message has gone out
@@ -105,13 +111,13 @@ class HealthMonitor(threading.Thread):
             c.detail = problem
             down_for = now - c.down_since
             if not c.alerted and down_for >= self.grace:
-                if self.send("⚠️ {}: {} is down since {} ({}): {}".format(
-                        self.where(), c.what, clock(c.down_since), duration(down_for), problem)):
+                if self.send("⚠️ {}: {} is down since {} ({}): {}{}".format(
+                        self.where(), c.what, clock(c.down_since), duration(down_for), problem, fix_line(c))):
                     c.alerted, c.last_alert = True, now
                     self.stats["problems"] += 1
             elif c.alerted and self.repeat and now - c.last_alert >= self.repeat:
-                if self.send("⚠️ {}: {} is still down, since {} ({}): {}".format(
-                        self.where(), c.what, clock(c.down_since), duration(down_for), problem)):
+                if self.send("⚠️ {}: {} is still down, since {} ({}): {}{}".format(
+                        self.where(), c.what, clock(c.down_since), duration(down_for), problem, fix_line(c))):
                     c.last_alert = now
             return
         if c.down_since is None:
@@ -177,14 +183,14 @@ def ollama_check(api, worker, timeout=10):
     return Check("ollama", "Ollama", check)
 
 
-def camera_check(camera, max_age):
-    """Video has arrived within max_age seconds."""
+def camera_check(camera, max_age, fix=""):
+    """Video has arrived within max_age seconds. fix: what to do when it is down (health.camera_fix)."""
     def check():
         age = time.monotonic() - camera.last_frame
         if age > max_age:
             return "no video from {} for {}".format(camera.name(), duration(age))
         return None
-    return Check("camera", "the camera", check)
+    return Check("camera", "the camera", check, fix)
 
 
 def server_checks(server, min_free_gb, timeout=20):
