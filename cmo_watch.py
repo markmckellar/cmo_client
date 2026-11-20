@@ -756,7 +756,7 @@ class EarlyChecker(threading.Thread):
 
     def __init__(self, conf, announcer, frame_path, cute=None):
         super().__init__(name="early", daemon=True)
-        self.cute = cute                # cute_sentence(rgb) when google_home.cute, else None
+        self.cute = cute                # cute_sentence(rgb, labels) when google_home.cute, else None
         self.c = conf["google_home"]["early"]
         self.max_event = conf["event"]["max_event"]
         self.model, self.question = conf["classifier"]["model"], conf["classifier"]["question"]
@@ -838,7 +838,7 @@ class EarlyChecker(threading.Thread):
                                  for l, v in st.votes.items()))
                 if announce:
                     self.stats["announced"] += 1
-                    self.announcer.announce(announce, name, extra=self.extra(st.positive))
+                    self.announcer.announce(announce, name, extra=self.extra(st.positive, announce))
                 started = list(st.votes)
                 if started and all(l in st.decided for l in started):
                     st.done = True
@@ -869,11 +869,11 @@ class EarlyChecker(threading.Thread):
             log.info("%s: event ended (%.1fs in): %s", name, time.time() - st.start,
                      ", ".join("{} {}/{} yes".format(l, st.votes[l][1], st.votes[l][0]) for l in announce))
             self.stats["announced"] += 1
-            self.announcer.announce(announce, name, extra=self.extra(st.positive))
+            self.announcer.announce(announce, name, extra=self.extra(st.positive, announce))
 
-    def extra(self, rgb):
-        """The announcement's extra sentence (google_home.cute) about rgb, or None."""
-        return None if self.cute is None or rgb is None else lambda: self.cute(rgb)
+    def extra(self, rgb, labels):
+        """The announcement's extra sentence (google_home.cute) about rgb and labels, or None."""
+        return None if self.cute is None or rgb is None else lambda: self.cute(rgb, labels)
 
 
 # ---- classifier + event writer ---------------------------------------------
@@ -911,8 +911,10 @@ def google_home_announcer(conf):
 
 
 def cute_sentences(conf):
-    """When google_home.cute: a function rgb -> a short, cute sentence about the picture (cmo_ollama's
-    cute_text), or None when it fails. Else None."""
+    """When google_home.cute: a function (rgb, labels) -> a short, cute sentence about the picture
+    (cmo_ollama's cute_text), or None when it fails. Else None. labels: the event's labels; the ones with
+    a google_home message (cat, raccoon) go in the question ("cat", "cat and raccoon"), the order of
+    google_home.message."""
     gh = conf["google_home"]
     if not (gh["enabled"] and gh["cute"]):
         return None
@@ -922,14 +924,16 @@ def cute_sentences(conf):
         return None
     model = conf["classifier"]["model"]
 
-    def cute(rgb):
+    def cute(rgb, labels=()):
+        said = [l for l in gh["message"] if gh["message"][l] and l in labels]
+        label = " and ".join(said)
         fd, path = tempfile.mkstemp(prefix="cute_", suffix=".jpg")
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(to_jpeg(rgb, 90))
             t0 = time.monotonic()
-            text = call_ollama.cute_text(path, model, timeout=gh["cute_seconds"])
-            log.info("google home: cute sentence (%.1fs): %r", time.monotonic() - t0, text)
+            text = call_ollama.cute_text(path, model, timeout=gh["cute_seconds"], label=label)
+            log.info("google home: cute sentence for %s (%.1fs): %r", label or "?", time.monotonic() - t0, text)
             return text
         finally:
             os.unlink(path)
@@ -1165,7 +1169,7 @@ class Worker(threading.Thread):
         if self.announcer:
             # on its own thread, right away (not after the upload)
             self.announcer.announce(hits, name, handled=early,
-                                    extra=(lambda rgb=cands[0].rgb: self.cute(rgb)) if self.cute and cands else None)
+                                    extra=(lambda rgb=cands[0].rgb: self.cute(rgb, hits)) if self.cute and cands else None)
         best, calls = 0, 0
         if cands and hits and self.cl["rep_frame_llm"]:
             jpgs = []

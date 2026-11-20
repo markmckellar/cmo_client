@@ -57,8 +57,9 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   cat stays, `google_home.reminder.cat` ("The cat is still at the door") is said every
   `google_home.remind_minutes` (15). Telegram still gets every event.
 - **Cute sentence** (`google_home.cute`, on for the pet door): after the message, one short sentence about
-  the event's picture from cmo_ollama's `cute_ollama.bash`, e.g. "There is a cat at the door. A tabby cat
-  is sitting by the door, looking in." The picture is the last early check that saw the label, or the
+  the event's picture from cmo_ollama's `cute_ollama.bash`, e.g. "There is a cat at the door. The cat waits
+  by the pet door, tail up, ready for its next adventure!" The question says what was seen (cat, raccoon)
+  and that it is a pet door on a porch, so the sentence sticks to that animal and doesn't invent objects. The picture is the last early check that saw the label, or the
   best moving frame at the end of the event. It costs one more Ollama call (about 1.5 s before the
   message is said) and only when something is said, not while a label is kept quiet. If the call fails,
   takes longer than `cute_seconds` (8), or would make the message longer than 200 characters, the plain
