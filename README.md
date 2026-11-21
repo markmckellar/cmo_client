@@ -63,7 +63,19 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   It always describes the animal's colour and markings (so you can tell which cat it is), in a random style
   (pirate, butler, sports commentator, ...), and works in facts about right now from `cute_context.py`:
   time of day, dark or daylight, the weather (wttr.in, `google_home.cute_weather_url`, every 30 min),
-  holiday or season, and the visit count today ("third visit today, back after 25 minutes"). No emoji. The picture is the last early check that saw the label, or the
+  holiday or season, and the visit count today ("third visit today, back after 25 minutes"). No emoji.
+  - **Accent**: some styles say the whole message in another Google voice (`google_home.cute_accents`):
+    the butler, royal herald, detective and spy in British English, the sports commentator in Australian.
+  - **In or out** (`google_home.cute_door`, the flap's box): from where the motion starts and ends
+    (`direction.py`), "going out" or "just came in", with time outside. Cats only; 18 of 19 hand-checked
+    clips right, and the miss said nothing rather than the wrong way.
+  - **Which cat** (`google_home.cute_cats`, "name: looks; name: looks"): the sentence uses the name when
+    the cat clearly matches one, and time outside is kept per cat.
+- **Night volume** (`google_home.night`, `night_volume`): between those hours (pet door: 00:00-08:00) the
+  speakers play at a lower volume (0.35), then go back to their own.
+- **Speakers that move**: a speaker that stops answering (the router gave it a new address) is looked up
+  by name on the network (mDNS, `google_home.discover`) and its new address used; all of them are
+  checked at startup too (`google_home.find_moved`). The log says when one moved. The picture is the last early check that saw the label, or the
   best moving frame at the end of the event. It costs one more Ollama call (about 1.5 s before the
   message is said) and only when something is said, not while a label is kept quiet. If the call fails,
   takes longer than `cute_seconds` (8), or would make the message longer than 200 characters, the plain

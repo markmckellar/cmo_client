@@ -158,6 +158,13 @@ DEFAULTS = {
         # add a short, cute sentence about the event's picture after the message (cmo_ollama's
         # cute_ollama.bash, about 1.5 s more before it is said); left out if it fails or takes longer
         # than cute_seconds
+        # quieter between these hours (start-end, 24 h clock; empty = never): night_volume is a level
+        # (0.0-1.0) for every speaker and/or name=level for some, e.g. "0.3, bedroom=0.2". A speaker is
+        # only turned down, never up, and put back to its own volume after the message.
+        "night": "",
+        "night_volume": "",
+        # look a speaker that stops answering up by name on the network (mDNS) and use its new address
+        "find_moved": True,
         "cute": False,
         "cute_seconds": 8.0,
         # facts about right now go in the cute sentence's question (cute_context.py): time of day, light,
@@ -165,6 +172,19 @@ DEFAULTS = {
         # weather), fetched at most every cute_weather_minutes
         "cute_weather_url": "https://wttr.in/?format=j1",
         "cute_weather_minutes": 30.0,
+        # the pet door flap's box in the frame (x0,y0,x1,y1, 0-1), to tell from the motion whether the animal
+        # went out or came in (direction.py); then "going out" / "back inside after 2 hours" are facts too.
+        # Empty = don't tell.
+        "cute_door": "",
+        # the cats who live here, "name: what it looks like; name: ...", e.g. "Luna: black and white tuxedo,
+        # red collar; Milo: brown tabby". The sentence calls a cat by name when it clearly matches one,
+        # and time outside is kept per cat. Empty = no names.
+        "cute_cats": "",
+        # the whole message in another accent for some of the cute sentence's styles: words in the style
+        # = Google voice language, comma separated (empty = always google_home.language)
+        "cute_accents": "butler=en-GB, royal herald=en-GB, nature documentary=en-GB, detective=en-GB, "
+                        "spy=en-GB, sports commentator=en-AU, weather reporter=en-AU, tour guide=en-AU, "
+                        "airport=en-IN",
         "early": {
             "enabled": False,
             "interval_seconds": 1.0,
@@ -652,6 +672,7 @@ class Event:
         self.picker = picker
         self.deltas = []                # (wall time, motion score, moving) for every analysed frame
         self.early = None               # EarlyState when google_home.early is on
+        self.track = None               # direction.Track when google_home.cute_door is set
 
 
 class Detector:
@@ -662,12 +683,16 @@ class Detector:
         self.size = size
         self.events = events
         self.early = None               # the EarlyChecker, when google_home.early is on
+        from direction import parse_box
+        self.door = parse_box(conf["google_home"]["cute_door"])   # the pet door flap, for in/out
         self.reset_stream()
 
     def reset_stream(self):
         self.scorer = MotionScorer(*self.size, masks=[tuple(x) for x in self.m["masks"]],
                                    pixel_threshold=self.m["pixel_threshold"])
         self.ev, self.recent, self.quiet_since = None, [], None
+        self.recent_changed = []        # the changed blocks of the frames before an event opens (direction)
+        self.recent_before = None       # the background just before them
 
     def frame(self, now, rgb):
         m, e = self.m, self.e
@@ -676,15 +701,30 @@ class Detector:
         self.recent = (self.recent + [moving])[-max(m["min_motion_frames"] * 2, 2):]
         ev = self.ev
         if ev is None:
+            if self.door and self.scorer.changed is not None:
+                if not moving:
+                    self.recent_before = self.scorer.bg.copy()
+                self.recent_changed = (self.recent_changed + [self.scorer.changed if moving else None])[-len(self.recent):]
             if sum(self.recent) < m["min_motion_frames"]:
                 return
             ev = self.ev = Event(now - len(self.recent) / m["fps"],
                                  FramePicker(k=self.cl["max_frames"], min_gap=self.cl["min_gap"]))
+            if self.door and self.scorer.bg is not None:
+                from direction import Track
+                before = self.recent_before if self.recent_before is not None else self.scorer.bg
+                ev.track = Track(self.door, before)
+                for ch in self.recent_changed[:-1]:     # the frames that opened the event (this one is added below)
+                    if ch is not None:
+                        ev.track.add(ch)
+                self.recent_changed = []
             if self.early:
                 ev.early = self.early.begin(ev.start)
+                ev.early.event = ev
             log.info("event: motion started (%.3f)", score)
         ev.deltas.append((now, score, moving))
         if moving:
+            if ev.track and self.scorer.changed is not None:
+                ev.track.add(self.scorer.changed)
             ev.frames += 1
             ev.peak_motion = max(ev.peak_motion, score)
             rank = frame_rank(score, rgb)
@@ -696,6 +736,8 @@ class Detector:
             self.quiet_since = now
         if (self.quiet_since and now - self.quiet_since >= e["post_roll"]) or now - ev.start >= e["max_event"]:
             ev.end = self.quiet_since or now
+            if ev.track and self.scorer.gray is not None:
+                ev.track.after = self.scorer.gray.copy()
             if ev.early:
                 ev.early.ended = True
             self.events.put(ev)
@@ -729,6 +771,7 @@ class EarlyState:
         self.checks = []                # what each check saw, for the event's me_data.json
         self.votes = {}                 # label: [checks since its first positive, positives]
         self.decided = {}               # label: "yes" (announced, or kept quiet by quiet_minutes) or "no"
+        self.event = None               # the detector's Event (for its direction.Track)
         self.positive = None            # the picture of the last check that saw a label (for google_home.cute)
 
     def offer(self, rank, t, rgb):
@@ -843,7 +886,7 @@ class EarlyChecker(threading.Thread):
                                  for l, v in st.votes.items()))
                 if announce:
                     self.stats["announced"] += 1
-                    self.announcer.announce(announce, name, extra=self.extra(st.positive, announce))
+                    self.announcer.announce(announce, name, extra=self.extra(st, announce))
                 started = list(st.votes)
                 if started and all(l in st.decided for l in started):
                     st.done = True
@@ -874,11 +917,17 @@ class EarlyChecker(threading.Thread):
             log.info("%s: event ended (%.1fs in): %s", name, time.time() - st.start,
                      ", ".join("{} {}/{} yes".format(l, st.votes[l][1], st.votes[l][0]) for l in announce))
             self.stats["announced"] += 1
-            self.announcer.announce(announce, name, extra=self.extra(st.positive, announce))
+            self.announcer.announce(announce, name, extra=self.extra(st, announce))
 
-    def extra(self, rgb, labels):
-        """The announcement's extra sentence (google_home.cute) about rgb and labels, or None."""
-        return None if self.cute is None or rgb is None else lambda: self.cute(rgb, labels)
+    def extra(self, st, labels):
+        """The announcement's extra sentence (google_home.cute) about the event's picture and labels, or None.
+        Mid-event, the direction can only be "out" (see direction.py)."""
+        rgb = st.positive
+        if self.cute is None or rgb is None:
+            return None
+        track = st.event.track if st.event else None
+        way = track.direction() if track and labels == ["cat"] else None     # cats only (direction.py)
+        return lambda: self.cute(rgb, labels, way)
 
 
 # ---- classifier + event writer ---------------------------------------------
@@ -905,7 +954,10 @@ def google_home_announcer(conf):
         raise SystemExit("error: google_home.enabled but google_home.devices is empty (set it in this "
                          "camera's .local.properties)")
     announcer = Announcer(devices, gh["message"], gh["language"], quiet_minutes=gh["quiet_minutes"],
-                          reminders=gh["reminder"], remind_minutes=gh["remind_minutes"])
+                          reminders=gh["reminder"], remind_minutes=gh["remind_minutes"], night=gh["night"],
+                          night_volume=gh["night_volume"], find_moved=gh["find_moved"])
+    if announcer.night and announcer.night_volume:
+        log.info("google home: night volume %s from %s", gh["night_volume"], gh["night"])
     log.info("google home: %s on %s", ", ".join("{} -> {!r}".format(k, v) for k, v in announcer.messages.items())
              or "no messages set", ", ".join(devices))
     if announcer.quiet:
@@ -934,22 +986,30 @@ def cute_sentences(conf):
     global _cute_context
     if _cute_context is None:          # one for the early check and the end of the event, so visits add up
         from cute_context import CuteContext
-        _cute_context = CuteContext(gh["cute_weather_url"], gh["cute_weather_minutes"])
+        _cute_context = CuteContext(gh["cute_weather_url"], gh["cute_weather_minutes"], gh["cute_cats"])
     context = _cute_context
+    accents = [(w.strip(), l.strip()) for w, _, l in (i.partition("=") for i in gh["cute_accents"].split(","))
+               if w.strip() and l.strip()]
 
-    def cute(rgb, labels=()):
+    def cute(rgb, labels=(), way=None):
         said = [l for l in gh["message"] if gh["message"][l] and l in labels]
         label = " and ".join(said)
-        facts = context.facts(said)
+        facts = context.facts(said, way=way if said == ["cat"] else None)     # direction: cats only
         fd, path = tempfile.mkstemp(prefix="cute_", suffix=".jpg")
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(to_jpeg(rgb, 90))
             t0 = time.monotonic()
-            text = call_ollama.cute_text(path, model, timeout=gh["cute_seconds"], label=label, context=facts)
-            log.info("google home: cute sentence for %s (%.1fs): %r [%s]", label or "?", time.monotonic() - t0,
-                     text, facts)
-            return text
+            info = {}
+            text = call_ollama.cute_text(path, model, timeout=gh["cute_seconds"], label=label, context=facts,
+                                         info=info)
+            style = info.get("style", "")
+            context.record(way if said == ["cat"] else None, label, info.get("cat", ""))
+            accent = next((lang for words, lang in accents if words in style), None)
+            log.info("google home: cute sentence for %s%s (%.1fs, %s%s): %r [%s]", label or "?",
+                     " " + info["cat"] if info.get("cat") else "", time.monotonic() - t0, style or "?",
+                     ", " + accent if accent else "", text, facts)
+            return (text, accent) if text else None
         finally:
             os.unlink(path)
     return cute
@@ -1184,7 +1244,8 @@ class Worker(threading.Thread):
         if self.announcer:
             # on its own thread, right away (not after the upload)
             self.announcer.announce(hits, name, handled=early,
-                                    extra=(lambda rgb=cands[0].rgb: self.cute(rgb, hits)) if self.cute and cands else None)
+                                    extra=(lambda rgb=cands[0].rgb, way=ev.track.direction() if ev.track and "cat" in hits else None:
+                                           self.cute(rgb, hits, way)) if self.cute and cands else None)
         best, calls = 0, 0
         if cands and hits and self.cl["rep_frame_llm"]:
             jpgs = []

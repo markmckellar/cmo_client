@@ -23,6 +23,16 @@ HOLIDAYS = {(1, 1): "New Year's Day", (2, 14): "Valentine's Day", (3, 17): "St. 
             (12, 25): "Christmas Day", (12, 31): "New Year's Eve"}
 
 
+def parse_cats(text):
+    """'Luna: black and white tuxedo, red collar; Milo: brown tabby' -> [('Luna', 'black and white ...'), ...]"""
+    cats = []
+    for item in (text or "").split(";"):
+        name, _, desc = item.partition(":")
+        if name.strip():
+            cats.append((name.strip(), desc.strip()))
+    return cats
+
+
 def part_of_day(hour):
     for end, name in ((5, "late at night"), (8, "early morning"), (12, "morning"), (14, "around midday"),
                       (17, "afternoon"), (21, "evening")):
@@ -101,14 +111,17 @@ class Weather:
 class CuteContext:
     """facts(labels) for one announcement. Counts each label's visits per day (since cmo_watch started)."""
 
-    def __init__(self, weather_url="", weather_minutes=30):
+    def __init__(self, weather_url="", weather_minutes=30, cats=""):
         self.weather = Weather(weather_url, weather_minutes * 60) if weather_url else None
         if self.weather:
             self.weather.get()                  # fetch now, so the first announcement has it
         self.visits = {}                        # label: (date, count today, datetime of the last one)
+        self.out_since = {}                     # cat name (or label): when it last went out (direction.py)
+        self.cats = parse_cats(cats)            # [(name, description)] of the cats who live here
         self.lock = threading.Lock()
 
-    def facts(self, labels, now=None):
+    def facts(self, labels, now=None, way=None):
+        """way: "out", "in" or None, from direction.py."""
         now = now or datetime.now()
         facts = ["it is {} on a {}".format(part_of_day(now.hour), now.strftime("%A"))]
         w = self.weather.get() if self.weather else None
@@ -129,4 +142,27 @@ class CuteContext:
                     text += ", back after " + ago((now - last).total_seconds())
                 facts.append(text)
                 self.visits[label] = (now.date(), count, now)
+                if way == "out":
+                    facts.append("the {} is going out through the pet door".format(label))
+                elif way == "in":
+                    facts.append("the {} just came in through the pet door".format(label))
+                    # who went out when, so it can say "back inside after 2 hours" for the right cat
+                    for who, out in sorted(self.out_since.items(), key=lambda x: x[1]):
+                        if timedelta(minutes=1) <= now - out < timedelta(hours=16):
+                            facts.append("{} went out {} ago".format(
+                                who if who in dict(self.cats) else "a " + who, ago((now - out).total_seconds())))
+            if label == "cat" and self.cats:
+                facts.append("the cats who live here: " + ", ".join(
+                    "{} ({})".format(n, d) if d else n for n, d in self.cats))
         return "; ".join(facts)
+
+    def record(self, way, label, cat=""):
+        """After the sentence: note who went out or came in (by the recognised cat's name, else the label)."""
+        if way not in ("in", "out"):
+            return
+        who = cat if cat in dict(self.cats) else label
+        with self.lock:
+            if way == "out":
+                self.out_since[who] = datetime.now()
+            else:
+                self.out_since.pop(who, None)

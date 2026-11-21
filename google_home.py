@@ -20,6 +20,7 @@ import ssl
 import struct
 import threading
 import time
+from datetime import datetime
 from urllib.parse import urlencode
 
 log = logging.getLogger("cmo")
@@ -176,6 +177,11 @@ class CastConnection:
         """The receiver's status: {'volume': {'level': 0.4, 'muted': False}, 'applications': [...]}."""
         return self.request("receiver-0", NS_RECEIVER, {"type": "GET_STATUS"}, ("RECEIVER_STATUS",))["status"]
 
+    def set_volume(self, level):
+        """Set the speaker's volume, 0.0 to 1.0."""
+        self.request("receiver-0", NS_RECEIVER, {"type": "SET_VOLUME", "volume": {"level": level}},
+                     ("RECEIVER_STATUS",))
+
     def play(self, url, title="Alert", content_type="audio/mp3"):
         """Play url in the Default Media Receiver. Returns once the speaker has accepted it."""
         reply = self.request("receiver-0", NS_RECEIVER, {"type": "LAUNCH", "appId": DEFAULT_MEDIA_RECEIVER},
@@ -216,14 +222,150 @@ def parse_devices(text):
     return devices
 
 
-def say(devices, text, language="en", timeout=10):
-    """Say text on every speaker at once (devices: {name: address}). Returns {name: None or error text}."""
+MDNS = ("224.0.0.251", 5353)
+
+
+def _mdns_name(data, i):
+    """A DNS name at data[i] (following compression pointers) -> (name, index after it)."""
+    labels, end = [], None
+    for _ in range(64):
+        n = data[i]
+        if n >= 0xC0:
+            end = end or i + 2
+            i = ((n & 0x3F) << 8) | data[i + 1]
+        elif n == 0:
+            return ".".join(labels), end or i + 1
+        else:
+            labels.append(data[i + 1:i + 1 + n].decode("utf-8", "replace"))
+            i += 1 + n
+    raise ValueError("bad name")
+
+
+def discover(timeout=3.0, service="_googlecast._tcp.local"):
+    """Google Cast devices on the local network, by an mDNS query: {friendly name: (address, model)}, e.g.
+    {'Bedroom': ('192.168.1.134', 'Google Home'), 'workout chrome': ('192.168.1.217', 'Chromecast')}. Listens on the mDNS port (shared
+    with avahi, if it runs) for the speakers' multicast answers: they don't answer an ordinary port.
+    Needs no avahi or extra packages."""
+    q = struct.pack(">6H", 0, 0, 1, 0, 0, 0) + b"".join(
+        bytes([len(p)]) + p.encode() for p in service.split(".")) + b"\0" + struct.pack(">HH", 12, 1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, "SO_REUSEPORT"):
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    try:
+        s.bind(("", MDNS[1]))
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton(MDNS[0]) + socket.inet_aton("0.0.0.0"))
+    except OSError as e:
+        log.warning("google home: can't listen on the mDNS port (%s), asking from another port", e)
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+    names, targets, hosts, models = {}, {}, {}, {}  # instance: fn / SRV target / md, target: A address
+    try:
+        s.sendto(q, MDNS)
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            s.settimeout(max(0.05, end - time.monotonic()))
+            try:
+                data, _ = s.recvfrom(9000)
+            except socket.timeout:
+                break
+            try:
+                qd, an, ns, ar = struct.unpack(">4H", data[4:12])
+                i = 12
+                for _ in range(qd):
+                    i = _mdns_name(data, i)[1] + 4
+                for _ in range(an + ns + ar):
+                    rname, i = _mdns_name(data, i)
+                    rtype, _, _, rlen = struct.unpack(">HHIH", data[i:i + 10])
+                    i += 10
+                    rdata = data[i:i + rlen]
+                    if rtype == 1 and rlen == 4:                         # A
+                        hosts[rname.lower()] = socket.inet_ntoa(rdata)
+                    elif rtype == 33:                                    # SRV
+                        targets[rname] = _mdns_name(data, i + 6)[0].lower()
+                    elif rtype == 16:                                    # TXT
+                        j = 0
+                        while j < rlen:
+                            item = rdata[j + 1:j + 1 + rdata[j]].decode("utf-8", "replace")
+                            j += 1 + rdata[j]
+                            if item.startswith("fn="):
+                                names[rname] = item[3:]
+                            elif item.startswith("md="):
+                                models[rname] = item[3:]
+                    i += rlen
+            except (IndexError, ValueError, struct.error):
+                continue
+    finally:
+        s.close()
+    return {fn: (hosts[targets[inst]], models.get(inst, "")) for inst, fn in names.items()
+            if targets.get(inst) in hosts}
+
+
+def match_device(name, found):
+    """The address in discover()'s found for a google_home.devices name: the device whose friendly name
+    is the same (any case), else the only speaker (not a Chromecast TV stick) whose name starts with it,
+    e.g. workout -> "Workout speaker". None when there is no such device."""
+    name = name.lower()
+    exact = [a for fn, (a, md) in found.items() if fn.lower() == name]
+    if exact:
+        return exact[0]
+    start = [a for fn, (a, md) in found.items() if fn.lower().startswith(name) and md != "Chromecast"]
+    return start[0] if len(start) == 1 else None
+
+
+def spoken_seconds(text):
+    """About how long Google's voice takes to say text."""
+    return 2.0 + len(text) / 13.0
+
+
+def _restore_volume(host, quiet, level, after, timeout):
+    """After the message, put a speaker's volume back to level, unless someone changed it meanwhile."""
+    time.sleep(after)
+    try:
+        with CastConnection(host, timeout) as cast:
+            now = cast.status().get("volume", {}).get("level")
+            if now is not None and abs(now - quiet) < 0.02:
+                cast.set_volume(level)
+    except Exception as e:
+        log.warning("google home: %s: could not put the volume back to %.2f: %s", host, level, e)
+
+
+def parse_hours(text):
+    """'00:00-08:00' -> (0, 480) minutes after midnight; '' -> None. The end may be past midnight."""
+    if not text or not text.strip():
+        return None
+    a, b = (p.strip() for p in text.split("-"))
+    mins = [int(x.split(":")[0]) * 60 + (int(x.split(":")[1]) if ":" in x else 0) for x in (a, b)]
+    return mins[0], mins[1]
+
+
+def parse_volumes(text):
+    """'0.3, bedroom=0.15' -> {'*': 0.3, 'bedroom': 0.15} (a bare level is for every speaker)."""
+    out = {}
+    for item in (text or "").split(","):
+        item = item.strip()
+        if item:
+            name, _, level = item.rpartition("=")
+            out[name.strip() or "*"] = float(level)
+    return out
+
+
+def say(devices, text, language="en", timeout=10, volumes=None):
+    """Say text on every speaker at once (devices: {name: address}). Returns {name: None or error text}.
+    volumes: {name: level} to say it at on those speakers (only ever quieter than they are); the old
+    volume is put back once the message is over."""
     url = tts_url(text, language)
     results = {}
+    volumes = volumes or {}
 
     def one(name, host):
         try:
             with CastConnection(host, timeout) as cast:
+                quiet = volumes.get(name)
+                old = cast.status().get("volume", {}).get("level") if quiet is not None else None
+                if old is not None and old > quiet:
+                    cast.set_volume(quiet)
+                    threading.Thread(target=_restore_volume, args=(host, quiet, old, spoken_seconds(text) + 3,
+                                                                   timeout), daemon=True).start()
                 cast.play(url, title=text[:60])
             results[name] = None
         except Exception as e:
@@ -251,12 +393,16 @@ class Announcer:
     as handled at the end of the event: their clocks move on but they are not said again, whatever
     quiet_minutes is. Thread-safe: the early check and the end of the event call it from two threads.
     announce's extra: a callable that returns a sentence to add after the message (cmo_watch's
-    google_home.cute: a cute sentence about the picture), or None; it is called on the announcement's
-    thread, and only when there is something to say."""
+    google_home.cute: a cute sentence about the picture), or (sentence, language) to say the whole message
+    in that accent (e.g. "en-GB"), or None; it is called on the announcement's thread, and only when there
+    is something to say.
+    night, night_volume: quieter between those hours (see parse_hours, parse_volumes).
+    find_moved: a speaker that doesn't answer is looked up by name on the network (discover) and its new
+    address used; all of them are checked once at the start too."""
 
     def __init__(self, devices, messages, language="en", timeout=10, quiet_minutes=0, reminders=None,
-                 remind_minutes=0):
-        self.devices = devices
+                 remind_minutes=0, night="", night_volume="", find_moved=True):
+        self.devices = dict(devices)
         self.messages = {k: v.strip() for k, v in messages.items() if v and v.strip()}
         self.language = language
         self.timeout = timeout
@@ -268,6 +414,48 @@ class Announcer:
         self.lock = threading.Lock()
         self.stats = {"announced": 0, "failed": 0}
         self.on_result = None       # callable(ok_speakers, failed_speakers) after each announcement, or None
+        self.night = parse_hours(night)                 # (start, end) minutes after midnight, or None
+        self.night_volume = parse_volumes(night_volume)  # {name or "*": level}
+        self.find_moved = find_moved
+        self.last_find = 0.0
+        if find_moved and self.devices:
+            threading.Thread(target=self.check_devices, name="google_home_find", daemon=True).start()
+
+    def volumes(self, now=None):
+        """{speaker: level} for now: the night volumes between google_home.night's hours, else {}."""
+        if not self.night or not self.night_volume:
+            return {}
+        now = now or datetime.now()
+        m = now.hour * 60 + now.minute
+        start, end = self.night
+        if not (start <= m < end if start < end else m >= start or m < end):
+            return {}
+        return {d: self.night_volume.get(d, self.night_volume.get("*")) for d in self.devices
+                if self.night_volume.get(d, self.night_volume.get("*")) is not None}
+
+    def check_devices(self, names=None):
+        """Look the speakers up by name (mDNS) and move any whose address changed (the router gave it a new
+        one). Returns the names that moved."""
+        self.last_find = time.monotonic()
+        try:
+            found = discover()
+        except OSError as e:
+            log.warning("google home: could not look the speakers up: %s", e)
+            return []
+        moved = []
+        for name in names or list(self.devices):
+            addr = match_device(name, found)
+            if addr is None:
+                log.warning("google home: %s (%s) not found on the network (found: %s)", name, self.devices[name],
+                            ", ".join("{} {}".format(fn, a) for fn, (a, md) in sorted(found.items())) or "none")
+            elif addr != self.devices[name]:
+                log.warning("google home: %s moved from %s to %s; using the new address (update "
+                            "google_home.devices)", name, self.devices[name], addr)
+                self.devices[name] = addr
+                moved.append(name)
+        if not names:
+            log.info("google home: speakers checked: %s", ", ".join("{} {}".format(n, a) for n, a in self.devices.items()))
+        return moved
 
     @staticmethod
     def _join(texts):
@@ -317,9 +505,13 @@ class Announcer:
         return text
 
     def _say(self, text, name, extra=None):
+        language = self.language
         if extra:
             try:
-                more = (extra() or "").strip()
+                more = extra() or ""
+                if isinstance(more, tuple):         # (sentence, language for its accent, e.g. "en-GB")
+                    more, language = more[0] or "", more[1] or language
+                more = more.strip()
             except Exception as e:
                 log.warning("google home: %s: no extra sentence: %s", name, e)
                 more = ""
@@ -327,8 +519,15 @@ class Announcer:
                 text = self._join([text, more])
             elif more:
                 log.info("google home: %s: extra sentence left out, too long for one message: %r", name, more)
+        volumes = self.volumes()
         try:
-            results = say(self.devices, text, self.language, self.timeout)
+            results = say(self.devices, text, language, self.timeout, volumes)
+            failed = [d for d, err in results.items() if err]
+            # a speaker that doesn't answer may have a new address: look it up (at most every 5 min) and retry
+            if failed and self.find_moved and time.monotonic() - self.last_find > 300:
+                moved = self.check_devices(failed)
+                if moved:
+                    results.update(say({d: self.devices[d] for d in moved}, text, language, self.timeout, volumes))
         except Exception as e:
             self.stats["failed"] += 1
             log.warning("google home: %s: %s", name, e)
@@ -338,5 +537,7 @@ class Announcer:
         if self.on_result:
             self.on_result(ok, sorted(failed))
         self.stats["announced" if ok else "failed"] += 1
-        (log.warning if failed else log.info)("google home: %s said %r on %s%s", name, text, ", ".join(ok) or "no speaker",
+        (log.warning if failed else log.info)("google home: %s said %r%s%s on %s%s", name, text,
+                 "" if language == self.language else " in " + language,
+                 " (night volume)" if volumes else "", ", ".join(ok) or "no speaker",
                  "; failed: " + "; ".join("{} ({})".format(d, e) for d, e in failed.items()) if failed else "")

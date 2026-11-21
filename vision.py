@@ -27,15 +27,20 @@ class MotionScorer:
         for x0, y0, x1, y1 in masks:
             self.mask[int(y0 * self.h):int(np.ceil(y1 * self.h)), int(x0 * self.w):int(np.ceil(x1 * self.w))] = False
         self.bg = None
+        self.changed = None
+        self.gray = None
 
     def score(self, rgb):
         b = self.block
         g = rgb[:self.h * b, :self.w * b].astype(np.float32).dot(np.array([0.299, 0.587, 0.114], np.float32))
         g = g.reshape(self.h, b, self.w, b).mean(axis=(1, 3))
+        self.gray = g                   # the last frame, block-averaged gray
         if self.bg is None:
             self.bg = g
             return 0.0
         changed = np.abs(g - self.bg) > self.pixel_threshold
+        changed &= self.mask
+        self.changed = changed          # the last frame's changed blocks (for where the motion is)
         s = float(changed[self.mask].mean())
         if s > self.global_change:   # a light switched on or off, or the camera re-exposed: start over
             self.bg = g
