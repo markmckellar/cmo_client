@@ -59,7 +59,11 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
 - **Cute sentence** (`google_home.cute`, on for the pet door): after the message, one short sentence about
   the event's picture from cmo_ollama's `cute_ollama.bash`, e.g. "There is a cat at the door. The cat waits
   by the pet door, tail up, ready for its next adventure!" The question says what was seen (cat, raccoon)
-  and that it is a pet door on a porch, so the sentence sticks to that animal and doesn't invent objects. The picture is the last early check that saw the label, or the
+  and that it is a pet door on a porch, so the sentence sticks to that animal and doesn't invent objects.
+  It always describes the animal's colour and markings (so you can tell which cat it is), in a random style
+  (pirate, butler, sports commentator, ...), and works in facts about right now from `cute_context.py`:
+  time of day, dark or daylight, the weather (wttr.in, `google_home.cute_weather_url`, every 30 min),
+  holiday or season, and the visit count today ("third visit today, back after 25 minutes"). No emoji. The picture is the last early check that saw the label, or the
   best moving frame at the end of the event. It costs one more Ollama call (about 1.5 s before the
   message is said) and only when something is said, not while a label is kept quiet. If the call fails,
   takes longer than `cute_seconds` (8), or would make the message longer than 200 characters, the plain

@@ -160,6 +160,11 @@ DEFAULTS = {
         # than cute_seconds
         "cute": False,
         "cute_seconds": 8.0,
+        # facts about right now go in the cute sentence's question (cute_context.py): time of day, light,
+        # holiday or season, visits today, and the weather from this JSON (wttr.in's format; empty = no
+        # weather), fetched at most every cute_weather_minutes
+        "cute_weather_url": "https://wttr.in/?format=j1",
+        "cute_weather_minutes": 30.0,
         "early": {
             "enabled": False,
             "interval_seconds": 1.0,
@@ -923,17 +928,21 @@ def cute_sentences(conf):
                     "announcing without it")
         return None
     model = conf["classifier"]["model"]
+    from cute_context import CuteContext
+    context = CuteContext(gh["cute_weather_url"], gh["cute_weather_minutes"])
 
     def cute(rgb, labels=()):
         said = [l for l in gh["message"] if gh["message"][l] and l in labels]
         label = " and ".join(said)
+        facts = context.facts(said)
         fd, path = tempfile.mkstemp(prefix="cute_", suffix=".jpg")
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(to_jpeg(rgb, 90))
             t0 = time.monotonic()
-            text = call_ollama.cute_text(path, model, timeout=gh["cute_seconds"], label=label)
-            log.info("google home: cute sentence for %s (%.1fs): %r", label or "?", time.monotonic() - t0, text)
+            text = call_ollama.cute_text(path, model, timeout=gh["cute_seconds"], label=label, context=facts)
+            log.info("google home: cute sentence for %s (%.1fs): %r [%s]", label or "?", time.monotonic() - t0,
+                     text, facts)
             return text
         finally:
             os.unlink(path)
