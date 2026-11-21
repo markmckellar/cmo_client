@@ -915,6 +915,9 @@ def google_home_announcer(conf):
     return announcer
 
 
+_cute_context = None          # cute_sentences' CuteContext
+
+
 def cute_sentences(conf):
     """When google_home.cute: a function (rgb, labels) -> a short, cute sentence about the picture
     (cmo_ollama's cute_text), or None when it fails. Else None. labels: the event's labels; the ones with
@@ -928,8 +931,11 @@ def cute_sentences(conf):
                     "announcing without it")
         return None
     model = conf["classifier"]["model"]
-    from cute_context import CuteContext
-    context = CuteContext(gh["cute_weather_url"], gh["cute_weather_minutes"])
+    global _cute_context
+    if _cute_context is None:          # one for the early check and the end of the event, so visits add up
+        from cute_context import CuteContext
+        _cute_context = CuteContext(gh["cute_weather_url"], gh["cute_weather_minutes"])
+    context = _cute_context
 
     def cute(rgb, labels=()):
         said = [l for l in gh["message"] if gh["message"][l] and l in labels]
