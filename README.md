@@ -14,6 +14,7 @@ each camera's settings file:
 | Name on cmo_server (`me_group`) | `pet_door` | `porch_cam` |
 | Telegram bot (`telegram.config`) | that machine's telegram-send config: @DeCatsBot | that machine's: the porch bot |
 | Google Home (`google_home.*`) | cat and raccoon messages on 3 speakers, early announcements and cute sentences on | off |
+| Deliveries (`delivery.*`) | off | "There's the delivery at the door" on 3 speakers, any time, quieter 00:00-08:00 |
 | Motion | 1% of the picture, no masks | 0.4%, the camera's clock masked out |
 | After upload | event deleted | kept 30 days in `local/porch_cam/events/` |
 | Log | `~/logs/pet_watch.log` | `~/logs/porch_watch.log` |
@@ -56,6 +57,20 @@ camera ──► one ffmpeg ─┬─ stream copy ──► local/<me_group>/buf
   once, not after every event; each label has its own clock, so a raccoon still gets through. While the
   cat stays, `google_home.reminder.cat` ("The cat is still at the door") is said every
   `google_home.remind_minutes` (15). Telegram still gets every event.
+- **Deliveries** (`delivery_watch.py`, `delivery.*`, on for the porch since 2026-11-22): every saved event goes to
+  the delivery check. Back-to-back events (each starting within `delivery.gap_seconds`, 15, of the last one's
+  movie ending) are one visit, since one trip to the door is often cut into two clips. When a visit is over (that
+  long has passed and nothing that started in it is still being recorded or classified), cmo_ollama's
+  `delivery.py` decides: some person event near the door (`peak_motion` >= `delivery.min_peak_motion`, 0.05)
+  shows someone holding a package, envelope, letters or a bag, or in a delivery uniform, and the person made a
+  round trip, up the path, to the door and back down it. Then `delivery.message` is said on
+  `google_home.devices` (whether or not `google_home.enabled` is on, so the porch's cat and raccoon messages
+  stay off), at `google_home.night_volume` during `google_home.night`, at most once per `delivery.quiet_minutes`;
+  `delivery.say_hours` can limit the hours. The visit's person events get `"delivery": true` in
+  `me_ollama.json` and the check's answer in `me_data.json` (`cmo_watch.delivery`), and are uploaded again so
+  the server has the label (a camera's key may upload but not relabel). Every check is logged as
+  `delivery: ...`. About 30 s of GPU per person event near the door; about 94% of deliveries, and about one false
+  alarm every 4-5 days (residents carrying things out and back in look the same).
 - **Cute sentence** (`google_home.cute`, on for the pet door): after the message, one short sentence about
   the event's picture from cmo_ollama's `cute_ollama.bash`, e.g. "There is a cat at the door. The cat waits
   by the pet door, tail up, ready for its next adventure!" The question says what was seen (cat, raccoon)

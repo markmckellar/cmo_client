@@ -198,6 +198,19 @@ DEFAULTS = {
             "person_quit": True,         # stop when a check sees a person and no animal (before any label)
         },
     },
+    "delivery": {
+        # porch deliveries (delivery_watch.py, cmo_ollama's delivery.py): after a visit to the door, decide
+        # whether it was a delivery (a package or delivery uniform, and a round trip up the path, to the door
+        # and back), say message on google_home.devices (whether or not google_home.enabled is on) and label
+        # the visit's events "delivery". About 30 s of GPU per person event near the door.
+        "enabled": False,
+        "message": "There's the delivery at the door",
+        "gap_seconds": 15.0,             # back-to-back events, each starting this soon after the last, are one visit
+        "min_peak_motion": 0.05,         # person events with less motion (far away, the sidewalk) aren't asked
+        "quiet_minutes": 2.0,            # the message isn't said again within this long
+        "say_hours": "",                 # said only between these hours (24 h clock); empty = any time (quieter
+                                         # during google_home.night). Deliveries outside them are still labelled.
+    },
     "health": {
         # a Telegram message when Ollama, the camera, a cmo_server or a disk is down, and when it is fixed
         # (see health.py)
@@ -1015,6 +1028,37 @@ def cute_sentences(conf):
     return cute
 
 
+def delivery_watch(conf, uploader, busy_since):
+    """The porch delivery check (delivery_watch.DeliveryWatch) when delivery.enabled, else None."""
+    d = conf["delivery"]
+    if not d["enabled"]:
+        return None
+    try:
+        import delivery
+    except ImportError as e:
+        raise SystemExit("error: delivery.enabled but classifier.cmo_ollama_dir has no delivery.py (git pull "
+                         "cmo_ollama): {}".format(e))
+    from delivery_watch import DeliveryWatch
+    announcer = None
+    gh = conf["google_home"]
+    if d["message"].strip():
+        from google_home import Announcer, parse_devices
+        devices = parse_devices(gh["devices"])
+        if not devices:
+            raise SystemExit("error: delivery.message is set but google_home.devices is empty (set it in this "
+                             "camera's .local.properties, or empty delivery.message)")
+        announcer = Announcer(devices, {"delivery": d["message"]}, gh["language"], quiet_minutes=d["quiet_minutes"],
+                              night=gh["night"], night_volume=gh["night_volume"], find_moved=gh["find_moved"])
+    log.info("delivery: checking person events with peak motion >= %s; visits joined across %.0f s gaps; %s",
+             d["min_peak_motion"], d["gap_seconds"], "saying {!r} on {}".format(d["message"], ", ".join(announcer.devices))
+             if announcer else "not saying anything")
+    if announcer and d["say_hours"]:
+        from google_home import parse_hours
+        announcer.say_hours = parse_hours(d["say_hours"])
+        log.info("delivery: said only %s", d["say_hours"])
+    return DeliveryWatch(d, conf["classifier"]["model"], delivery, announcer, uploader, busy_since)
+
+
 def early_checker(conf, announcer):
     """The early check (EarlyChecker) when google_home.early.enabled, else None."""
     c = conf["google_home"]["early"]
@@ -1139,6 +1183,19 @@ class Worker(threading.Thread):
         self.stats = {"events": 0, "matches": 0, "skipped_short": 0, "unclassified": 0, "saved": 0,
                       "llm_seconds": 0.0}
         self.llm_failed_since = None    # wall time of the first failed classification in a row (health.py)
+        self.delivery = None            # delivery_watch.DeliveryWatch, when delivery.enabled
+
+    def busy_since(self, detector):
+        """The start of the oldest event still being recorded, waiting in the queue or not yet saved, or None
+        (for the delivery check: a visit isn't over while one of its events is on its way)."""
+        with self.lock:
+            starts = [ev.start for ev in self.pending]      # an event stays here until it is saved or dropped
+        with self.events.mutex:
+            starts += [ev.start for ev in self.events.queue]
+        ev = detector.ev
+        if ev is not None:
+            starts.append(ev.start)
+        return min(starts) if starts else None
 
     def oldest_needed(self):
         with self.lock:
@@ -1318,6 +1375,8 @@ class Worker(threading.Thread):
         tmp.rename(final)
         self.stats["saved"] += 1
         log.info("saved %s (%.1fs, %d frames)", final, duration, frames)
+        if self.delivery:
+            self.delivery.add(name, final, ev.start, t0 + duration, me_data["cmo_watch"]["labels"], ev.peak_motion)
         if self.uploader:
             self.uploader.poke()
 
@@ -1406,6 +1465,7 @@ def main(argv=None):
     early = early_checker(conf, announcer)
     detector.early = early
     worker = Worker(conf, events, camera, uploader, announcer, history)
+    worker.delivery = delivery_watch(conf, uploader, lambda: worker.busy_since(detector))
     server_urls = [x["url"] for x in servers if x.get("active", True)]
     health = health_monitor(conf, camera, worker, server_urls, notifier, history)
     reporter = daily_reporter(conf, history, health, uploader, server_urls, notifier, started)
@@ -1414,7 +1474,7 @@ def main(argv=None):
     if reporter:
         # SIGUSR1: send a report for the last 24 hours now (systemctl kill --kill-who=main -s USR1 <service>)
         signal.signal(signal.SIGUSR1, lambda *_: reporter.request())
-    for t in [camera, worker] + [x for x in (early, uploader, health, reporter) if x]:
+    for t in [camera, worker] + [x for x in (early, uploader, health, reporter, worker.delivery) if x]:
         t.start()
     log.info("cmo_watch: %s", code())
     log.info("cmo_watch: %s watching %s (%s) at %dx%d, motion at %dx%d %s fps", conf["me_group"], camera.name(),
@@ -1427,8 +1487,9 @@ def main(argv=None):
                 break
             if time.monotonic() - last_report > 600:
                 last_report = time.monotonic()
-                log.info("stats: %s camera=%s upload=%s%s (%s)", worker.stats, camera.stats,
-                         uploader.stats if uploader else None, " early={}".format(early.stats) if early else "", code())
+                log.info("stats: %s camera=%s upload=%s%s%s (%s)", worker.stats, camera.stats,
+                         uploader.stats if uploader else None, " early={}".format(early.stats) if early else "",
+                         " delivery={}".format(worker.delivery.stats) if worker.delivery else "", code())
     except KeyboardInterrupt:
         pass
     log.info("stopping...")
